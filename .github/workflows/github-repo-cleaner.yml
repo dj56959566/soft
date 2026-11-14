@@ -1,19 +1,21 @@
 # 打包 gsoft/clean_repos.py 为 Windows exe（PyInstaller）
 # 注意：这是你仓库里现在用的那个文件，名字是 github-repo-cleaner.yml，
 # 不是 gsoft-exe.yml——覆盖的时候别传错文件名。
-# 已修好三处：
+# 已修好：
 #  1. 打包命令是 gsoft/clean_repos.py（脚本在 gsoft/ 子目录）
 #  2. 手动跑也发 Release，主页右边“发行版”能看到；
 #     以前那句 if: startsWith(github.ref, 'refs/tags/') 只在打 tag 时才发，
 #     手动跑只出 Artifacts，所以主页一直是空的。
 #  3. 版本号不再写死：从 gsoft/clean_repos.py 里自动读 VERSION
-#     （比如 v1.9），每次改代码升版本，重跑打包就发对应版本号的新 Release，
-#     新 exe 覆盖旧文件；打 tag 时用 tag 名。
+#     （比如 v2.0），每次改代码升版本，重跑打包就发对应版本号的新 Release。
+#  4. Release 里放压缩包 github-repo-cleaner-windows.zip（不是单个 exe），
+#     下载后解压就能用；Actions 里不再上传附件，打包文件只放发行版，
+#     代码改了旧包就过时了，不再显示和上传。
+#  5. 只保留最新 2 个发行版：每次发完新版，自动删掉第 3 个及更旧的发行版
+#     （连 tag 一起删），超过 2 个就不要了。
 # 用法：把这个文件覆盖到仓库的 .github/workflows/github-repo-cleaner.yml，
 # 然后去 Actions 页 → Build github-repo-cleaner.exe → Run workflow 手动跑一次，
-# 跑完回主页看，发行版里会出现对应版本号，点进去就能下 exe。
-# 上传打包发布的是压缩文件包 github-repo-cleaner-windows.zip（Artifacts 里），
-# Release 里是单个 exe 文件 github-repo-cleaner.exe。
+# 跑完回主页看，发行版里会出现对应版本号，点进去下 zip 解压就能用。
 name: Build github-repo-cleaner.exe
 
 permissions:
@@ -45,11 +47,9 @@ jobs:
           echo "版本号：$ver"
       - name: 打包成单个 exe
         run: pyinstaller --onefile --console --name github-repo-cleaner gsoft/clean_repos.py
-      - name: 上传 exe（Artifacts，压缩包）
-        uses: actions/upload-artifact@v4
-        with:
-          name: github-repo-cleaner-windows
-          path: dist/github-repo-cleaner.exe
+      - name: 打成压缩包（Release 里放 zip，下载解压就能用）
+        shell: pwsh
+        run: Compress-Archive -Path dist/github-repo-cleaner.exe -DestinationPath dist/github-repo-cleaner-windows.zip -Force
       - name: 发到 Release（手动跑也发，主页能看到）
         # 打 tag 时用 tag 名，否则用脚本里的版本号；重复跑会更新同一个 Release，不会重复建
         uses: softprops/action-gh-release@v2
@@ -58,4 +58,23 @@ jobs:
           name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.version.outputs.version }}
           generate_release_notes: true
           make_latest: true
-          files: dist/github-repo-cleaner.exe
+          files: dist/github-repo-cleaner-windows.zip
+      - name: 只保留最新 2 个发行版（多的删掉）
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $json = gh release list --limit 100 --json tagName,createdAt
+          if (-not $json) { echo "没有发行版，不用删"; exit 0 }
+          $releases = $json | ConvertFrom-Json
+          $sorted = @($releases | Sort-Object createdAt -Descending)
+          echo "当前发行版共 $($sorted.Count) 个，只保留最新 2 个"
+          if ($sorted.Count -gt 2) {
+            $toDelete = $sorted | Select-Object -Skip 2
+            foreach ($r in $toDelete) {
+              echo "删除旧发行版：$($r.tagName)"
+              gh release delete $r.tagName --yes --cleanup-tag
+            }
+          } else {
+            echo "不用删"
+          }
