@@ -1,14 +1,19 @@
 # 打包 gsoft/clean_repos.py 为 Windows exe（PyInstaller）
 # 注意：这是你仓库里现在用的那个文件，名字是 github-repo-cleaner.yml，
 # 不是 gsoft-exe.yml——覆盖的时候别传错文件名。
-# 已修好两处：
+# 已修好三处：
 #  1. 打包命令是 gsoft/clean_repos.py（脚本在 gsoft/ 子目录）
-#  2. 手动跑也发 Release v1.2，主页右边“发行版”能看到；
+#  2. 手动跑也发 Release，主页右边“发行版”能看到；
 #     以前那句 if: startsWith(github.ref, 'refs/tags/') 只在打 tag 时才发，
 #     手动跑只出 Artifacts，所以主页一直是空的。
+#  3. 版本号不再写死：从 gsoft/clean_repos.py 里自动读 VERSION
+#     （比如 v1.9），每次改代码升版本，重跑打包就发对应版本号的新 Release，
+#     新 exe 覆盖旧文件；打 tag 时用 tag 名。
 # 用法：把这个文件覆盖到仓库的 .github/workflows/github-repo-cleaner.yml，
 # 然后去 Actions 页 → Build github-repo-cleaner.exe → Run workflow 手动跑一次，
-# 跑完回主页看，发行版里会出现 v1.2，点进去就能下 exe。
+# 跑完回主页看，发行版里会出现对应版本号，点进去就能下 exe。
+# 上传打包发布的是压缩文件包 github-repo-cleaner-windows.zip（Artifacts 里），
+# Release 里是单个 exe 文件 github-repo-cleaner.exe。
 name: Build github-repo-cleaner.exe
 
 permissions:
@@ -30,19 +35,27 @@ jobs:
           python-version: "3.12"
       - name: 安装 PyInstaller
         run: pip install pyinstaller
+      - name: 读版本号（从 clean_repos.py 的 VERSION 里读）
+        id: version
+        shell: pwsh
+        run: |
+          $line = Select-String -Path gsoft/clean_repos.py -Pattern 'VERSION = "v([0-9.]+)"' | Select-Object -First 1
+          $ver = "v" + $line.Matches.Groups[1].Value
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "版本号：$ver"
       - name: 打包成单个 exe
         run: pyinstaller --onefile --console --name github-repo-cleaner gsoft/clean_repos.py
-      - name: 上传 exe（Artifacts）
+      - name: 上传 exe（Artifacts，压缩包）
         uses: actions/upload-artifact@v4
         with:
           name: github-repo-cleaner-windows
           path: dist/github-repo-cleaner.exe
       - name: 发到 Release（手动跑也发，主页能看到）
-        # 手动跑时 tag 不存在就用 v1.2，打 tag 时用 tag 名；重复跑会更新同一个 Release，不会重复建
+        # 打 tag 时用 tag 名，否则用脚本里的版本号；重复跑会更新同一个 Release，不会重复建
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.version.outputs.version }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.version.outputs.version }}
           generate_release_notes: true
           make_latest: true
           files: dist/github-repo-cleaner.exe
