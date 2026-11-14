@@ -59,11 +59,10 @@ Token 准备（二选一，token 绝不要写进脚本里）：
   #    带参数跑（如 --list-only / --move）还是走命令行模式，不进菜单
 
 作者：djkyc / 生成时间：2026-11-14
-版本：v1.9（翻页提示改清楚 + 工作流自动读版本号发 Release）
-  v1.9 改动：翻页提示原来挤在一行里，看完输 q 不明显，改成单独成段、
-  空行隔开，q 放最前面：看完了吗？输 q 结束浏览去勾选；工作流不再写死
-  v1.5，改为从 clean_repos.py 里自动读 VERSION，每次改代码升版本，
-  重跑打包就发对应版本号的新 Release，覆盖旧文件。
+版本：v2.0（Release 改成 zip 压缩包 + 只保留最新 2 个发行版）
+  v2.0 改动：主页发行版里不再直接放单个 exe，改成 zip 压缩包
+  github-repo-cleaner-windows.zip，下载后解压就能用；每次发新版后
+  自动删掉旧发行版，只保留最新 2 个版本，超过的不要了。
   v1.3 改动：隐藏输入（getpass）在 Windows 黑窗口右键粘贴没反应，改成普通 input，
   粘贴用 Ctrl+V，校验通过后自动清屏；提示区单独一行给 https://github.com/settings/tokens，
   输 o 可直接打开浏览器去建 Token。
@@ -82,7 +81,7 @@ import webbrowser
 from datetime import datetime
 
 API = "https://api.github.com"
-VERSION = "v1.9"
+VERSION = "v2.0"
 
 
 # ---------- 工具函数 ----------
