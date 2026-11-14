@@ -59,12 +59,16 @@ Token 准备（二选一，token 绝不要写进脚本里）：
   #    带参数跑（如 --list-only / --move）还是走命令行模式，不进菜单
 
 作者：djkyc / 生成时间：2026-11-14
-版本：v1.3（Token 输入改成可粘贴的 input + 提示区单独给建 Token 网址、可一键打开浏览器）
+版本：v1.4（不再启动自动弹浏览器；网址单独一行可点链接 + 输 o 打开；Token 可直接按回车从剪贴板读取）
+  v1.4 改动：右键粘贴、Ctrl+V 都不灵时，不用粘贴也行——浏览器里复制好 Token，
+  回来直接按回车自动从剪贴板读；网址用 OSC 8 链接格式单独一行，Windows Terminal
+  里按住 Ctrl 再左键点一下就能打开，普通黑窗口点不开就输 o 回车打开。
   v1.3 改动：隐藏输入（getpass）在 Windows 黑窗口右键粘贴没反应，改成普通 input，
   粘贴用 Ctrl+V，校验通过后自动清屏；提示区单独一行给 https://github.com/settings/tokens，
   输 o 可直接打开浏览器去建 Token。
 """
 import argparse
+import ctypes
 import json
 import os
 import shutil
@@ -77,7 +81,7 @@ import webbrowser
 from datetime import datetime
 
 API = "https://api.github.com"
-VERSION = "v1.3"
+VERSION = "v1.4"
 
 
 # ---------- 工具函数 ----------
@@ -162,12 +166,88 @@ def check_scopes(headers):
                   "去 https://github.com/settings/tokens 重新勾选 delete_repo 再生成。")
 
 
+def _read_clipboard():
+    """从剪贴板读一段文字（只读，不写剪贴板）。Windows 用 ctypes 读，失败返回 ""。
+
+    用途：黑窗口里右键粘贴、Ctrl+V 都不灵时，用户只要在浏览器里复制好 Token，
+    回到这里直接按回车，就能自动从剪贴板取到，不用再粘贴。
+    """
+    if os.name == "nt":
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            CF_UNICODETEXT = 13
+            if not user32.OpenClipboard(None):
+                return ""
+            try:
+                handle = user32.GetClipboardData(CF_UNICODETEXT)
+                if not handle:
+                    return ""
+                ptr = kernel32.GlobalLock(handle)
+                if not ptr:
+                    return ""
+                try:
+                    text = ctypes.wstring_at(ptr)
+                    return (text or "").strip()
+                finally:
+                    kernel32.GlobalUnlock(handle)
+            finally:
+                user32.CloseClipboard()
+        except Exception:
+            return ""
+    # 非 Windows：先试 tkinter，再试 pbpaste / xclip
+    try:
+        import tkinter
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            return root.clipboard_get().strip()
+        finally:
+            root.destroy()
+    except Exception:
+        pass
+    for cmd in (["pbpaste"], ["xclip", "-selection", "clipboard", "-o"]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except Exception:
+            continue
+    return ""
+
+
+def _looks_like_token(text):
+    """剪贴板里的东西像不像 Token：ghp_ / github_pat_ 开头，或一长串无空格字符。"""
+    t = (text or "").strip()
+    if t.startswith("ghp_") or t.startswith("github_pat_"):
+        return True
+    return len(t) >= 20 and " " not in t and "\n" not in t
+
+
+def _print_token_link():
+    """把建 Token 的网址单独一行打出来，并做成可点的链接。
+
+    黑窗口本身点不开网址：Windows Terminal 里按住 Ctrl 再左键点一下就能打开；
+    普通 cmd 黑窗口点不开，就输 o 回车打开（下面 prompt 里有这个选项）。
+    OSC 8 是终端超链接格式，支持的终端会把它显示成可点的链接，不支持的终端
+    会原样显示网址文字，不影响复制。
+    """
+    url = "https://github.com/settings/tokens"
+    osc8 = f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\"
+    print(f"  去这里建 Token（按住 Ctrl 再左键点一下就能打开）：")
+    print(f"  {osc8}")
+    print("  （Classic 类型，Generate new token (classic)）")
+
+
 def _read_token_pasteable(prompt):
     """读 token：用普通 input，不用隐藏输入。
 
     原因：隐藏输入（getpass）在 Windows 黑窗口里右键粘贴经常没反应，
     改成普通 input 后粘贴用 Ctrl+V 就能贴进去（右键粘贴不灵就用 Ctrl+V）。
     代价是粘贴时屏幕上会显示出 Token，校验通过后立刻清屏，不让它留在屏幕上。
+    注意：如果按 Ctrl+V 出来的还是你刚打的字母（比如只打出一个 T），
+    说明剪贴板里当时就只有那个字母，Token 没复制上——回浏览器重新复制
+    完整 Token（以 ghp_ 开头的那一长串）再回来按回车自动读取。
     """
     try:
         return input(prompt).strip()
@@ -197,28 +277,45 @@ def prompt_token():
     print("  第一步：先要你的 GitHub Token（谁用问谁要）。")
     print("  Token 需要勾选这些权限：delete_repo（删库）+ read:org（扫组织）+ repo")
     print()
-    print("  去这里建 Token：")
-    print("  https://github.com/settings/tokens")
-    print("  （Classic 类型，Generate new token (classic)）")
+    # 不再启动就自动弹浏览器：网址放在下面单独一行，左键点一下就能打开
+    # （Windows Terminal 里按住 Ctrl 再左键点；普通黑窗口点不开就输 o 回车打开）。
+    _print_token_link()
     print()
-    # 一点击就能打开：启动时直接用系统默认浏览器打开建 Token 的网页，
-    # 不用你再输 o、不用手动复制网址；打不开时再手动复制上面那个网址。
-    try:
-        webbrowser.open("https://github.com/settings/tokens")
-        print("  已自动打开浏览器，去建好 Token 再回来粘贴。")
-    except Exception:
-        print("  打不开浏览器，手动复制上面那个网址到浏览器打开。")
-    print("  粘贴方法：复制好 Token 后，在这里按 Ctrl+V 粘贴（右键粘贴不灵就用 Ctrl+V），")
+    print("  用法（二选一，不用粘贴也行）：")
+    print("  ① 在浏览器里复制好 Token，回到这里直接按回车，自动从剪贴板读取；")
+    print("  ② 或者在这里按 Ctrl+V 粘贴后按回车（右键粘贴不灵就用 Ctrl+V）。")
+    print("  还没建 Token 就输 o 回车，打开上面那个网页去建。")
     print("  粘贴时会显示出来，校验通过后会自动清屏。")
     print("  这个 Token 只在本次运行里用，不会保存到任何文件里。")
     print("-" * 56)
-    for attempt in range(1, 4):
-        tok = _read_token_pasteable("  请粘贴 GitHub Token（输 q 退出）：")
-        if tok.lower() == "q":
+    # 输 o 打开网页、剪贴板是空的，都不算一次校验机会；只有真拿 Token 去校验了才算
+    attempt = 0
+    while attempt < 3:
+        raw = _read_token_pasteable(
+            "  请粘贴 Token（已复制好直接按回车读取剪贴板，输 o 打开网页，输 q 退出）：")
+        if raw.lower() == "q":
             return ""
-        if not tok:
-            print("  没输东西，退出。")
-            return ""
+        if raw.lower() == "o":
+            try:
+                webbrowser.open("https://github.com/settings/tokens")
+                print("  已打开浏览器，去建好 Token、复制好，回来按回车。")
+            except Exception:
+                print("  打不开浏览器，手动复制上面那个网址到浏览器打开。")
+            continue
+        if not raw:
+            # 直接按回车：自动从剪贴板取，不用粘贴
+            tok = _read_clipboard()
+            if not tok:
+                print("  剪贴板是空的，先去浏览器复制好 Token 再回来按回车。")
+                continue
+            if not _looks_like_token(tok):
+                print(f"  剪贴板里的不是 Token（开头是 {tok[:10]!r}…），")
+                print("  请回浏览器复制完整 Token（以 ghp_ 开头的那一长串）再回来按回车。")
+                continue
+            print("  已从剪贴板读取到 Token。")
+        else:
+            tok = raw
+        attempt += 1
         print(f"  正在校验 Token（第 {attempt}/3 次）…")
         status, data, headers = api_request(tok, "GET", "/user")
         if status == 200:
@@ -231,7 +328,7 @@ def prompt_token():
         if status == 401:
             print("     一般是 Token 抄错了、过期了，或者不是这个账号的 Token。")
         if attempt < 3:
-            print("  请重新粘贴一次（Ctrl+V）。")
+            print("  请重新粘贴一次（Ctrl+V），或直接按回车从剪贴板重读。")
     print("  ❌ 3 次都不对，退出。")
     return ""
 
