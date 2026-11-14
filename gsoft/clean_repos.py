@@ -59,10 +59,12 @@ Token 准备（二选一，token 绝不要写进脚本里）：
   #    带参数跑（如 --list-only / --move）还是走命令行模式，不进菜单
 
 作者：djkyc / 生成时间：2026-11-14
-版本：v1.2（新增中文主菜单 + 启动时提示输 token）
+版本：v1.3（Token 输入改成可粘贴的 input + 提示区单独给建 Token 网址、可一键打开浏览器）
+  v1.3 改动：隐藏输入（getpass）在 Windows 黑窗口右键粘贴没反应，改成普通 input，
+  粘贴用 Ctrl+V，校验通过后自动清屏；提示区单独一行给 https://github.com/settings/tokens，
+  输 o 可直接打开浏览器去建 Token。
 """
 import argparse
-import getpass
 import json
 import os
 import shutil
@@ -71,10 +73,11 @@ import sys
 import tempfile
 import urllib.request
 import urllib.error
+import webbrowser
 from datetime import datetime
 
 API = "https://api.github.com"
-VERSION = "v1.2"
+VERSION = "v1.3"
 
 
 # ---------- 工具函数 ----------
@@ -159,21 +162,31 @@ def check_scopes(headers):
                   "去 https://github.com/settings/tokens 重新勾选 delete_repo 再生成。")
 
 
-def _read_token_hidden(prompt):
-    """读 token：优先隐藏输入（getpass），失败时退回普通 input。返回去掉首尾空格的值。"""
+def _read_token_pasteable(prompt):
+    """读 token：用普通 input，不用隐藏输入。
+
+    原因：隐藏输入（getpass）在 Windows 黑窗口里右键粘贴经常没反应，
+    改成普通 input 后粘贴用 Ctrl+V 就能贴进去（右键粘贴不灵就用 Ctrl+V）。
+    代价是粘贴时屏幕上会显示出 Token，校验通过后立刻清屏，不让它留在屏幕上。
+    """
     try:
-        return getpass.getpass(prompt).strip()
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
+def _clear_screen():
+    """校验通过后清屏，把刚才显示出来的 Token 从屏幕上清掉。"""
+    try:
+        os.system("cls" if os.name == "nt" else "clear")
     except Exception:
-        try:
-            return input(prompt).strip()
-        except (EOFError, KeyboardInterrupt):
-            return ""
+        pass
 
 
 def prompt_token():
     """启动时一步一步问你要 token：谁用问谁要。
 
-    规则：隐藏输入（屏幕上不显示）、仅本次运行有效、绝不写进文件；
+    规则：仅本次运行有效、绝不写进文件；
     每输一次就去 GitHub 校验一次，不对就中文告诉你、让你重输，最多 3 次；
     输 q 或直接回车空着就退出。
     返回：校验通过的 token；3 次都不对或用户退出时返回 ""。
@@ -183,13 +196,24 @@ def prompt_token():
     print("=" * 56)
     print("  第一步：先要你的 GitHub Token（谁用问谁要）。")
     print("  Token 需要勾选这些权限：delete_repo（删库）+ read:org（扫组织）+ repo")
-    print("  建 Token 的地方：https://github.com/settings/tokens")
+    print()
+    print("  去这里建 Token：")
+    print("  https://github.com/settings/tokens")
     print("  （Classic 类型，Generate new token (classic)）")
-    print("  注意：你输的时候屏幕上什么都不显示，这是正常的，输完按回车。")
+    print()
+    # 一点击就能打开：启动时直接用系统默认浏览器打开建 Token 的网页，
+    # 不用你再输 o、不用手动复制网址；打不开时再手动复制上面那个网址。
+    try:
+        webbrowser.open("https://github.com/settings/tokens")
+        print("  已自动打开浏览器，去建好 Token 再回来粘贴。")
+    except Exception:
+        print("  打不开浏览器，手动复制上面那个网址到浏览器打开。")
+    print("  粘贴方法：复制好 Token 后，在这里按 Ctrl+V 粘贴（右键粘贴不灵就用 Ctrl+V），")
+    print("  粘贴时会显示出来，校验通过后会自动清屏。")
     print("  这个 Token 只在本次运行里用，不会保存到任何文件里。")
     print("-" * 56)
     for attempt in range(1, 4):
-        tok = _read_token_hidden("  请输入 GitHub Token（输 q 退出）：")
+        tok = _read_token_pasteable("  请粘贴 GitHub Token（输 q 退出）：")
         if tok.lower() == "q":
             return ""
         if not tok:
@@ -198,6 +222,7 @@ def prompt_token():
         print(f"  正在校验 Token（第 {attempt}/3 次）…")
         status, data, headers = api_request(tok, "GET", "/user")
         if status == 200:
+            _clear_screen()
             print(f"  ✅ Token 有效，当前账号：{data.get('login')}")
             check_scopes(headers)
             return tok
@@ -206,7 +231,7 @@ def prompt_token():
         if status == 401:
             print("     一般是 Token 抄错了、过期了，或者不是这个账号的 Token。")
         if attempt < 3:
-            print("  请重新输入一次。")
+            print("  请重新粘贴一次（Ctrl+V）。")
     print("  ❌ 3 次都不对，退出。")
     return ""
 
