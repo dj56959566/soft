@@ -53,10 +53,16 @@ Token 准备（二选一，token 绝不要写进脚本里）：
   python3 clean_repos.py --move dj56959566/old-repo --to dj56959566/main-repo --subdir old-code --delete-source
   python3 clean_repos.py --move dj56959566/old-repo --to dj56959566/main-repo --auto-rename
 
+  # 8) v1.2：双击 exe / 不带参数直接跑，进中文主菜单
+  #    启动时先问你要 token（谁用问谁要，隐藏输入，仅本次有效，不保存到文件）
+  #    菜单：1 看清单 2 勾选删除 3 移动合并 4 归档 0 退出
+  #    带参数跑（如 --list-only / --move）还是走命令行模式，不进菜单
+
 作者：djkyc / 生成时间：2026-11-14
-版本：v1.1（新增 --move 移动合并）
+版本：v1.2（新增中文主菜单 + 启动时提示输 token）
 """
 import argparse
+import getpass
 import json
 import os
 import shutil
@@ -68,7 +74,7 @@ import urllib.error
 from datetime import datetime
 
 API = "https://api.github.com"
-VERSION = "v1.1"
+VERSION = "v1.2"
 
 
 # ---------- 工具函数 ----------
@@ -151,6 +157,143 @@ def check_scopes(headers):
         if "delete_repo" not in scopes:
             print("⚠️  警告：token 没有 delete_repo 权限，删除时会报 403。"
                   "去 https://github.com/settings/tokens 重新勾选 delete_repo 再生成。")
+
+
+def _read_token_hidden(prompt):
+    """读 token：优先隐藏输入（getpass），失败时退回普通 input。返回去掉首尾空格的值。"""
+    try:
+        return getpass.getpass(prompt).strip()
+    except Exception:
+        try:
+            return input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
+
+def prompt_token():
+    """启动时一步一步问你要 token：谁用问谁要。
+
+    规则：隐藏输入（屏幕上不显示）、仅本次运行有效、绝不写进文件；
+    每输一次就去 GitHub 校验一次，不对就中文告诉你、让你重输，最多 3 次；
+    输 q 或直接回车空着就退出。
+    返回：校验通过的 token；3 次都不对或用户退出时返回 ""。
+    """
+    print("=" * 56)
+    print("  GitHub 批量删库工具 " + VERSION)
+    print("=" * 56)
+    print("  第一步：先要你的 GitHub Token（谁用问谁要）。")
+    print("  Token 需要勾选这些权限：delete_repo（删库）+ read:org（扫组织）+ repo")
+    print("  建 Token 的地方：https://github.com/settings/tokens")
+    print("  （Classic 类型，Generate new token (classic)）")
+    print("  注意：你输的时候屏幕上什么都不显示，这是正常的，输完按回车。")
+    print("  这个 Token 只在本次运行里用，不会保存到任何文件里。")
+    print("-" * 56)
+    for attempt in range(1, 4):
+        tok = _read_token_hidden("  请输入 GitHub Token（输 q 退出）：")
+        if tok.lower() == "q":
+            return ""
+        if not tok:
+            print("  没输东西，退出。")
+            return ""
+        print(f"  正在校验 Token（第 {attempt}/3 次）…")
+        status, data, headers = api_request(tok, "GET", "/user")
+        if status == 200:
+            print(f"  ✅ Token 有效，当前账号：{data.get('login')}")
+            check_scopes(headers)
+            return tok
+        msg = data.get("message", "") if isinstance(data, dict) else data
+        print(f"  ❌ Token 不对：HTTP {status} — {msg}")
+        if status == 401:
+            print("     一般是 Token 抄错了、过期了，或者不是这个账号的 Token。")
+        if attempt < 3:
+            print("  请重新输入一次。")
+    print("  ❌ 3 次都不对，退出。")
+    return ""
+
+
+def _pause(msg="  按回车返回菜单…"):
+    """防闪退：每做完一步都等你按回车，双击 exe 也不会一闪而过。"""
+    try:
+        input(msg)
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def _run_self(extra_args):
+    """菜单里调自己：exe 就调自己，.py 就用 python 调自己。
+
+    Token 已放进子进程的环境变量里，子进程不会再问你要 Token。
+    """
+    env = os.environ.copy()
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable] + extra_args
+    else:
+        cmd = [sys.executable, os.path.abspath(__file__)] + extra_args
+    try:
+        subprocess.run(cmd, env=env)
+    except KeyboardInterrupt:
+        print("\n  已中断，回到菜单。")
+
+
+def show_menu(token):
+    """中文主菜单：无参数启动时进这里，循环到你选 0 退出为止。"""
+    os.environ["GITHUB_TOKEN"] = token  # 只放进内存里的环境变量，不写文件
+    while True:
+        print()
+        print("=" * 56)
+        print("  GitHub 批量删库工具 — 中文菜单")
+        print("=" * 56)
+        print("  1. 查看仓库清单（只看不删，最安全）")
+        print("  2. 勾选删除仓库（列清单 → 输序号 → 输 DELETE 确认）")
+        print("  3. 移动合并仓库（A 仓库搬到 B 仓库的子目录下）")
+        print("  4. 归档仓库（代替删除，可恢复）")
+        print("  0. 退出")
+        print("-" * 56)
+        try:
+            choice = input("  请输入序号（0-4）：").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  已退出。")
+            return
+        if choice == "0":
+            print("  已退出，什么都没动。")
+            return
+        if choice == "1":
+            _run_self(["--list-only"])
+            _pause()
+        elif choice == "2":
+            print("  接下来会列出全部仓库，你输序号勾选，删前还要输 DELETE 确认。")
+            # 注意：不能传空参数，否则子进程又会进菜单；传 --scope all 强制走删库流程
+            _run_self(["--scope", "all"])
+            _pause()
+        elif choice == "3":
+            src = input("  来源仓库（完整名，如 dj56959566/old-repo）：").strip()
+            dst = input("  目标仓库（完整名，如 dj56959566/main-repo）：").strip()
+            if not src or not dst or "/" not in src or "/" not in dst:
+                print("  ❌ 两个都要写完整名（账号/仓库名），回到菜单。")
+                _pause()
+                continue
+            sub = input("  子目录名（直接回车就用来源仓库名）：").strip()
+            extra = ["--move", src, "--to", dst]
+            if sub:
+                extra += ["--subdir", sub]
+            ans = input("  搬完要不要删除源库？输 y 才删，其他直接回车保留：").strip().lower()
+            if ans == "y":
+                extra += ["--delete-source"]
+            print("  先演练一遍，确认没问题再真搬。")
+            _run_self(extra + ["--dry-run"])
+            ok = input("  演练看完了，确认要真搬？输 y 真搬，其他任意键取消：").strip().lower()
+            if ok != "y":
+                print("  已取消，没搬。")
+                _pause()
+                continue
+            _run_self(extra)
+            _pause()
+        elif choice == "4":
+            print("  归档是只读、可恢复的，比删除安全。")
+            _run_self(["--archive"])
+            _pause()
+        else:
+            print("  ❌ 没有这个选项，请输入 0-4。")
 
 
 def parse_selection(text, total):
@@ -512,13 +655,28 @@ def main():
                    help="同名工作流/子目录自动改名，不逐个问你")
     args = p.parse_args()
 
+    # 无参数启动（双击 exe / 直接 python3 clean_repos.py）进中文菜单，
+    # 带参数（如 --list-only / --move / --file）走命令行模式，不进菜单。
+    menu_mode = len(sys.argv) == 1
+
     token = get_token(args)
     if not token:
-        print("❌ 没找到 token。请先做一步（二选一）：\n"
-              "  export GITHUB_TOKEN=ghp_xxxx   # classic PAT，勾选 delete_repo + read:org\n"
-              "  或 gh auth login                # 用 gh 登录，token 要有 delete_repo 权限\n"
-              "  建 token：https://github.com/settings/tokens")
-        sys.exit(1)
+        if sys.stdin.isatty():
+            # 谁用问谁要：一步一步交互问 Token，校验通过才继续
+            token = prompt_token()
+            if not token:
+                _pause("  按回车退出…")
+                sys.exit(1)
+        else:
+            print("❌ 没找到 token。请先做一步（二选一）：\n"
+                  "  export GITHUB_TOKEN=ghp_xxxx   # classic PAT，勾选 delete_repo + read:org\n"
+                  "  或 gh auth login                # 用 gh 登录，token 要有 delete_repo 权限\n"
+                  "  建 token：https://github.com/settings/tokens")
+            sys.exit(1)
+
+    if menu_mode:
+        show_menu(token)
+        return
 
     # ---- 移动合并模式：--move 优先，不走删库流程 ----
     if args.move:
