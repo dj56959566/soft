@@ -7,7 +7,7 @@ GitHub 批量删库工具 — 扫描自己 / 所有组织仓库，可选性删�
   1. 自动扫描：个人仓库 + 你加入的所有组织仓库（默认 --scope all）
      也可只扫一个账号/组织：--owner dj56959566 或 --org xxx
   2. 先列清单、再交互勾选，不会一上来就删
-  3. 三重保险：① 再次确认清单 ② 输入 DELETE ③ 逐个删、逐个回显结果
+  3. 三重保险：1. 再次确认清单 2. 输入 DELETE 3. 逐个删、逐个回显结果
   4. 删除不可逆！删前自动把完整清单备份到 repos_list.txt，
      删完写删除日志 deleted_YYYYMMDD_HHMMSS.log
   5. 只用 Python 标准库，不用装任何依赖；gh 已登录时可自动取 token
@@ -59,10 +59,13 @@ Token 准备（二选一，token 绝不要写进脚本里）：
   #    带参数跑（如 --list-only / --move）还是走命令行模式，不进菜单
 
 作者：djkyc / 生成时间：2026-11-14
-版本：v1.4（不再启动自动弹浏览器；网址单独一行可点链接 + 输 o 打开；Token 可直接按回车从剪贴板读取）
-  v1.4 改动：右键粘贴、Ctrl+V 都不灵时，不用粘贴也行——浏览器里复制好 Token，
-  回来直接按回车自动从剪贴板读；网址用 OSC 8 链接格式单独一行，Windows Terminal
-  里按住 Ctrl 再左键点一下就能打开，普通黑窗口点不开就输 o 回车打开。
+版本：v1.6（菜单先选范围 + 清单一页 10 个可翻页）
+  v1.6 改动：菜单里看清单/删库/归档前先选范围——1 个人仓库 / 2 组织仓库
+  （多个组织再选一个）/ 9 全部，选完只列那个范围的仓库；清单一页显示 10 个，
+  n 下一页 / p 上一页 / 数字跳页 / q 结束浏览去勾选，序号是全局序号，
+  翻页后勾选还用这个号。粘贴说明：黑窗口里左键是选中、右键才是粘贴，
+  左键点一下粘贴不了；想用 Ctrl+V 就点窗口左上角图标 -> 属性 -> 选项
+  -> 勾上“启用 Ctrl 键快捷方式”。
   v1.3 改动：隐藏输入（getpass）在 Windows 黑窗口右键粘贴没反应，改成普通 input，
   粘贴用 Ctrl+V，校验通过后自动清屏；提示区单独一行给 https://github.com/settings/tokens，
   输 o 可直接打开浏览器去建 Token。
@@ -81,12 +84,38 @@ import webbrowser
 from datetime import datetime
 
 API = "https://api.github.com"
-VERSION = "v1.4"
+VERSION = "v1.6"
 
 
 # ---------- 工具函数 ----------
+def _read_token_file():
+    """兜底：exe/脚本旁边有个 token.txt 就直接读它（第一行就是 Token）。
+
+    粘贴实在不灵时用这个最稳：用记事本新建 token.txt，把 Token 粘贴进去保存，
+    再运行 exe，不用在黑窗口里粘贴。注意：token.txt 只放你自己电脑上，
+    千万别传到 GitHub 仓库里，用完可以删掉。
+    """
+    for base in (os.path.dirname(os.path.abspath(__file__)),
+                 os.getcwd(),
+                 os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else ""):
+        if not base:
+            continue
+        p = os.path.join(base, "token.txt")
+        try:
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8", errors="ignore") as f:
+                    content = f.read().strip()
+                if content:
+                    tok = content.split()[0]
+                    print(f"[提示] 已从 {p} 读取 Token。")
+                    return tok
+        except Exception:
+            continue
+    return ""
+
+
 def get_token(args):
-    """token 来源：--token > GITHUB_TOKEN 环境变量 > gh auth token"""
+    """token 来源：--token > GITHUB_TOKEN 环境变量 > gh auth token > token.txt"""
     if args.token:
         return args.token.strip()
     env = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -96,11 +125,11 @@ def get_token(args):
         r = subprocess.run(["gh", "auth", "token"],
                            capture_output=True, text=True, timeout=10)
         if r.returncode == 0 and r.stdout.strip():
-            print("ℹ️  未设 GITHUB_TOKEN，已自动使用 `gh auth token`")
+            print("[提示]  未设 GITHUB_TOKEN，已自动使用 `gh auth token`")
             return r.stdout.strip()
     except Exception:
         pass
-    return ""
+    return _read_token_file()
 
 
 def api_request(token, method, path, data=None):
@@ -137,7 +166,7 @@ def api_get_all(token, path):
             token, "GET", f"{path}{sep}per_page=100&page={page}")
         if status != 200:
             msg = data.get("message", "") if isinstance(data, dict) else data
-            print(f"❌ 拉取失败 {path}：HTTP {status} — {msg}")
+            print(f"[失败] 拉取失败 {path}：HTTP {status} — {msg}")
             if status == 401:
                 print("   原因一般是 token 无效/过期，或没用 Bearer 方式传。"
                       "先去 https://github.com/settings/tokens 检查。")
@@ -160,9 +189,9 @@ def check_scopes(headers):
     """Classic token 会在响应头回显权限范围，缺 delete_repo 就提前警告"""
     scopes = headers.get("X-OAuth-Scopes", "") if headers else ""
     if scopes:
-        print(f"ℹ️  当前 token 权限范围：{scopes}")
+        print(f"[提示]  当前 token 权限范围：{scopes}")
         if "delete_repo" not in scopes:
-            print("⚠️  警告：token 没有 delete_repo 权限，删除时会报 403。"
+            print("[警告]  警告：token 没有 delete_repo 权限，删除时会报 403。"
                   "去 https://github.com/settings/tokens 重新勾选 delete_repo 再生成。")
 
 
@@ -225,18 +254,17 @@ def _looks_like_token(text):
 
 
 def _print_token_link():
-    """把建 Token 的网址单独一行打出来，并做成可点的链接。
+    """把建 Token 的网址单独一行打出来，只打纯文字，不加任何转义码。
 
-    黑窗口本身点不开网址：Windows Terminal 里按住 Ctrl 再左键点一下就能打开；
-    普通 cmd 黑窗口点不开，就输 o 回车打开（下面 prompt 里有这个选项）。
-    OSC 8 是终端超链接格式，支持的终端会把它显示成可点的链接，不支持的终端
-    会原样显示网址文字，不影响复制。
+    教训：v1.4 用 OSC 8 做可点链接，老黑窗口（GBK）不支持，会显示成乱码方框，
+    所以 v1.5 改回纯文字网址。Windows Terminal 里按住 Ctrl 再左键点一下
+    纯文字网址也能打开；普通 cmd 黑窗口点不开，就输 1 回车打开
+    （下面 prompt 里有这个选项，字母 o 和数字 0 容易看混，改用数字 1）。
     """
-    url = "https://github.com/settings/tokens"
-    osc8 = f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\"
-    print(f"  去这里建 Token（按住 Ctrl 再左键点一下就能打开）：")
-    print(f"  {osc8}")
+    print("  去这里建 Token：")
+    print("  https://github.com/settings/tokens")
     print("  （Classic 类型，Generate new token (classic)）")
+    print("  点不开就输 1 回车，帮你打开这个网页。")
 
 
 def _read_token_pasteable(prompt):
@@ -281,21 +309,27 @@ def prompt_token():
     # （Windows Terminal 里按住 Ctrl 再左键点；普通黑窗口点不开就输 o 回车打开）。
     _print_token_link()
     print()
-    print("  用法（二选一，不用粘贴也行）：")
-    print("  ① 在浏览器里复制好 Token，回到这里直接按回车，自动从剪贴板读取；")
-    print("  ② 或者在这里按 Ctrl+V 粘贴后按回车（右键粘贴不灵就用 Ctrl+V）。")
-    print("  还没建 Token 就输 o 回车，打开上面那个网页去建。")
-    print("  粘贴时会显示出来，校验通过后会自动清屏。")
+    print("  用法（不用粘贴也行）：")
+    print("  1. 在浏览器里复制好 Token，回到这里直接按回车，自动从剪贴板读取；")
+    print("  2. 或者在这里按 Ctrl+V 粘贴后按回车（右键粘贴不灵就用 Ctrl+V）。")
+    print("  3. 粘贴不显示也不怕：用记事本在 exe 旁边新建 token.txt，")
+    print("     把 Token 粘贴进去保存，再运行 exe，会自动读取，不用在黑窗口里粘贴。")
+    print("  黑窗口里左键是选中、右键才是粘贴，左键点一下粘贴不了，这是黑窗口")
+    print("  本身的规矩，不是脚本的问题；想用 Ctrl+V 就点窗口左上角图标")
+    print("  -> 属性 -> 选项 -> 勾上“启用 Ctrl 键快捷方式”，以后 Ctrl+V 就能直接粘贴。")
+    print("  还没建 Token 就输 1 回车，打开上面那个网页去建。")
+    print("  粘贴后按回车会显示收到几位、开头是什么，校验通过后会自动清屏。")
     print("  这个 Token 只在本次运行里用，不会保存到任何文件里。")
     print("-" * 56)
-    # 输 o 打开网页、剪贴板是空的，都不算一次校验机会；只有真拿 Token 去校验了才算
+    # 输 1/o/0 打开网页、剪贴板是空的，都不算一次校验机会；只有真拿 Token 去校验了才算
+    # 注：字母 o 和数字 0 长得像，都当成打开网页，免得输错。
     attempt = 0
     while attempt < 3:
         raw = _read_token_pasteable(
-            "  请粘贴 Token（已复制好直接按回车读取剪贴板，输 o 打开网页，输 q 退出）：")
+            "  请粘贴 Token（已复制好直接按回车读取剪贴板，输 1 打开网页，输 q 退出）：")
         if raw.lower() == "q":
             return ""
-        if raw.lower() == "o":
+        if raw.lower() in ("1", "o", "0", "打开"):
             try:
                 webbrowser.open("https://github.com/settings/tokens")
                 print("  已打开浏览器，去建好 Token、复制好，回来按回车。")
@@ -307,29 +341,32 @@ def prompt_token():
             tok = _read_clipboard()
             if not tok:
                 print("  剪贴板是空的，先去浏览器复制好 Token 再回来按回车。")
+                print("  粘贴实在不灵就用 token.txt：记事本新建 token.txt，粘贴保存再运行。")
                 continue
             if not _looks_like_token(tok):
-                print(f"  剪贴板里的不是 Token（开头是 {tok[:10]!r}…），")
+                print(f"  剪贴板里的不是 Token，长度 {len(tok)} 位，开头是 {tok[:10]!r}，")
                 print("  请回浏览器复制完整 Token（以 ghp_ 开头的那一长串）再回来按回车。")
                 continue
-            print("  已从剪贴板读取到 Token。")
+            print(f"  已从剪贴板读取到 Token，共 {len(tok)} 位，开头 {tok[:4]}。")
         else:
             tok = raw
+            # 粘贴上去不显示也不怕：这里直接告诉你收到几位，证明粘贴进来了
+            print(f"  已收到 Token，共 {len(tok)} 位，开头 {tok[:4]}。")
         attempt += 1
         print(f"  正在校验 Token（第 {attempt}/3 次）…")
         status, data, headers = api_request(tok, "GET", "/user")
         if status == 200:
             _clear_screen()
-            print(f"  ✅ Token 有效，当前账号：{data.get('login')}")
+            print(f"  [成功] Token 有效，当前账号：{data.get('login')}")
             check_scopes(headers)
             return tok
         msg = data.get("message", "") if isinstance(data, dict) else data
-        print(f"  ❌ Token 不对：HTTP {status} — {msg}")
+        print(f"  [失败] Token 不对：HTTP {status} — {msg}")
         if status == 401:
             print("     一般是 Token 抄错了、过期了，或者不是这个账号的 Token。")
         if attempt < 3:
             print("  请重新粘贴一次（Ctrl+V），或直接按回车从剪贴板重读。")
-    print("  ❌ 3 次都不对，退出。")
+    print("  [失败] 3 次都不对，退出。")
     return ""
 
 
@@ -357,6 +394,67 @@ def _run_self(extra_args):
         print("\n  已中断，回到菜单。")
 
 
+def _choose_scope(token):
+    """菜单里先选范围：1 个人仓库 / 2 组织仓库，选完只列那个范围的仓库。
+
+    返回：传给子进程的范围参数，如 ["--owner", "djkyc"] 或 ["--org", "xxx"]，
+    选 9 是全部（个人+所有组织），选 0 或输错返回 None（回菜单）。
+    """
+    status, me, _ = api_request(token, "GET", "/user")
+    if status != 200:
+        print("  [失败] 拿不到当前账号，先检查 Token。")
+        return None
+    login = me.get("login", "")
+    orgs, _ = api_get_all(token, "/user/orgs")
+    org_names = [o.get("login", "") for o in orgs if o.get("login")]
+    print()
+    print("  先选看哪个范围：")
+    print(f"  1. 个人仓库（{login}）")
+    if org_names:
+        print("  2. 组织仓库")
+        for i, name in enumerate(org_names, 1):
+            print(f"     2-{i} {name}")
+    else:
+        print("  2. 组织仓库（你没有加入任何组织）")
+    print("  9. 全部（个人 + 所有组织）")
+    print("  0. 返回菜单")
+    sel = input("  请输入（1 / 2 / 9 / 0）：").strip()
+    if sel == "0" or sel == "":
+        return None
+    if sel == "1":
+        return ["--owner", login]
+    if sel == "9":
+        return ["--scope", "all"]
+    if sel == "2":
+        if not org_names:
+            print("  [提示] 你没有加入任何组织，先选 1 看个人仓库。")
+            return None
+        if len(org_names) == 1:
+            return ["--org", org_names[0]]
+        pick = input(f"  选哪个组织（1-{len(org_names)}）：").strip()
+        try:
+            n = int(pick)
+        except ValueError:
+            print("  [失败] 输入不对，回到菜单。")
+            return None
+        if 1 <= n <= len(org_names):
+            return ["--org", org_names[n - 1]]
+        print("  [失败] 没有这个组织，回到菜单。")
+        return None
+    if sel.startswith("2-"):
+        try:
+            n = int(sel[2:])
+        except ValueError:
+            print("  [失败] 输入不对，回到菜单。")
+            return None
+        if 1 <= n <= len(org_names):
+            return ["--org", org_names[n - 1]]
+        print("  [失败] 没有这个组织，回到菜单。")
+        return None
+    print("  [失败] 没有这个选项，回到菜单。")
+    return None
+
+
 def show_menu(token):
     """中文主菜单：无参数启动时进这里，循环到你选 0 退出为止。"""
     os.environ["GITHUB_TOKEN"] = token  # 只放进内存里的环境变量，不写文件
@@ -380,18 +478,23 @@ def show_menu(token):
             print("  已退出，什么都没动。")
             return
         if choice == "1":
-            _run_self(["--list-only"])
+            scope = _choose_scope(token)
+            if scope is None:
+                continue
+            _run_self(scope + ["--list-only"])
             _pause()
         elif choice == "2":
-            print("  接下来会列出全部仓库，你输序号勾选，删前还要输 DELETE 确认。")
-            # 注意：不能传空参数，否则子进程又会进菜单；传 --scope all 强制走删库流程
-            _run_self(["--scope", "all"])
+            scope = _choose_scope(token)
+            if scope is None:
+                continue
+            print("  接下来会列出这个范围的仓库，你输序号勾选，删前还要输 DELETE 确认。")
+            _run_self(scope)
             _pause()
         elif choice == "3":
             src = input("  来源仓库（完整名，如 dj56959566/old-repo）：").strip()
             dst = input("  目标仓库（完整名，如 dj56959566/main-repo）：").strip()
             if not src or not dst or "/" not in src or "/" not in dst:
-                print("  ❌ 两个都要写完整名（账号/仓库名），回到菜单。")
+                print("  [失败] 两个都要写完整名（账号/仓库名），回到菜单。")
                 _pause()
                 continue
             sub = input("  子目录名（直接回车就用来源仓库名）：").strip()
@@ -411,11 +514,81 @@ def show_menu(token):
             _run_self(extra)
             _pause()
         elif choice == "4":
+            scope = _choose_scope(token)
+            if scope is None:
+                continue
             print("  归档是只读、可恢复的，比删除安全。")
-            _run_self(["--archive"])
+            _run_self(scope + ["--archive"])
             _pause()
         else:
-            print("  ❌ 没有这个选项，请输入 0-4。")
+            print("  [失败] 没有这个选项，请输入 0-4。")
+
+
+PAGE_SIZE = 10
+
+
+def _print_repo_page(repos, page, total_pages):
+    """打一页仓库表（一页 10 个），序号是全局序号，翻页后勾选还用这个号。"""
+    start = (page - 1) * PAGE_SIZE
+    end = min(start + PAGE_SIZE, len(repos))
+    print(f"\n共 {len(repos)} 个仓库，第 {page}/{total_pages} 页（一页 {PAGE_SIZE} 个）：")
+    print(f"{'序号':>4}  {'仓库':<45} {'可见性':<8} {'*':>4}  {'更新':<10}  描述")
+    for i in range(start, end):
+        r = repos[i]
+        desc = (r.get("description") or "")[:40].replace("\n", " ")
+        vis = "private" if r.get("private") else "public"
+        if r.get("archived"):
+            vis += "/归档"
+        print(f"{i + 1:>4}  {r['full_name']:<45} {vis:<8} "
+              f"{r.get('stargazers_count', 0):>4}  "
+              f"{(r.get('updated_at') or '')[:10]:<10}  {desc}")
+
+
+def _show_repos_paged(repos):
+    """分页显示仓库清单：一页 10 个，可以翻页。
+
+    交互式才翻页（不是终端、或只有一页就一次打完，不卡住）；
+    翻页：n 下一页 / p 上一页 / 数字跳到第几页 / q 结束浏览去勾选。
+    序号是全局序号，翻页后勾选（1,3,5-8 / all）还用这个号。
+    """
+    total_pages = (len(repos) + PAGE_SIZE - 1) // PAGE_SIZE
+    if total_pages <= 1 or not sys.stdin.isatty():
+        _print_repo_page(repos, 1, total_pages)
+        return
+    page = 1
+    while True:
+        _print_repo_page(repos, page, total_pages)
+        if total_pages == 1:
+            return
+        try:
+            nav = input(
+                "  翻页：n 下一页 / p 上一页 / 数字跳页 / q 结束浏览去勾选：").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if nav in ("q", "quit", "exit", ""):
+            return
+        if nav == "n":
+            if page < total_pages:
+                page += 1
+            else:
+                print("  已经是最后一页了。")
+            continue
+        if nav == "p":
+            if page > 1:
+                page -= 1
+            else:
+                print("  已经是第一页了。")
+            continue
+        try:
+            n = int(nav)
+        except ValueError:
+            print("  输入不对，输 n / p / 数字 / q。")
+            continue
+        if 1 <= n <= total_pages:
+            page = n
+        else:
+            print(f"  没有第 {n} 页，只有 1-{total_pages} 页。")
 
 
 def parse_selection(text, total):
@@ -485,11 +658,11 @@ def resolve_workflow_name(dst_dir, filename, source_repo, auto_rename):
     # 注意：内容完全相同的情况调用方已提前跳过，不会走到这里
     if auto_rename:
         new = _auto_rename(dst_dir, filename, source_repo)
-        print(f"  ⚠️  同名工作流 {filename} 已存在，自动改名为 {new}")
+        print(f"  [警告]  同名工作流 {filename} 已存在，自动改名为 {new}")
         return new
     # 交互改名：回车=自动改名，输入“跳过”=不合并这个文件
     auto = _auto_rename(dst_dir, filename, source_repo)
-    print(f"  ⚠️  目标仓库已有同名工作流：{filename}")
+    print(f"  [警告]  目标仓库已有同名工作流：{filename}")
     print(f"      来源仓库是 {source_repo}，直接覆盖会丢掉目标仓库原来的工作流。")
     ans = input(f"      请输入新名字（直接回车自动改成 {auto}，输入 跳过 则不合并这个文件）：").strip()
     if ans in ("跳过", "跳过这个", "skip"):
@@ -498,10 +671,10 @@ def resolve_workflow_name(dst_dir, filename, source_repo, auto_rename):
     if not ans:
         return auto
     if "/" in ans or "\\" in ans:
-        print("      ❌ 名字里不能带 /，已跳过这个文件。")
+        print("      [失败] 名字里不能带 /，已跳过这个文件。")
         return None
     if os.path.exists(os.path.join(dst_dir, ans)):
-        print(f"      ❌ {ans} 也已存在，已跳过这个文件。")
+        print(f"      [失败] {ans} 也已存在，已跳过这个文件。")
         return None
     return ans
 
@@ -515,9 +688,9 @@ def resolve_subdir(dst_root, subdir, auto_rename):
         while os.path.exists(os.path.join(dst_root, cand)):
             n += 1
             cand = f"{subdir}-{n}"
-        print(f"  ⚠️  目标仓库已有目录 {subdir}/，自动改用 {cand}/")
+        print(f"  [警告]  目标仓库已有目录 {subdir}/，自动改用 {cand}/")
         return cand
-    ans = input(f"  ⚠️  目标仓库已有目录 {subdir}/，请输入新的子目录名"
+    ans = input(f"  [警告]  目标仓库已有目录 {subdir}/，请输入新的子目录名"
                 f"（直接回车自动改成 {subdir}-1）：").strip()
     if not ans:
         n, cand = 1, f"{subdir}-1"
@@ -526,10 +699,10 @@ def resolve_subdir(dst_root, subdir, auto_rename):
             cand = f"{subdir}-{n}"
         return cand
     if "/" in ans or "\\" in ans or ans in (".", ".."):
-        print("      ❌ 子目录名不合法，退出。")
+        print("      [失败] 子目录名不合法，退出。")
         sys.exit(1)
     if os.path.exists(os.path.join(dst_root, ans)):
-        print(f"      ❌ {ans}/ 也已存在，退出。")
+        print(f"      [失败] {ans}/ 也已存在，退出。")
         sys.exit(1)
     return ans
 
@@ -602,7 +775,7 @@ def apply_move(src_dir, dst_dir, subdir, source_repo, auto_rename):
                 continue
             dst_file = os.path.join(dst_wf, f)
             if os.path.exists(dst_file) and _same_file(s, dst_file):
-                print(f"  ℹ️  工作流 {f} 与目标完全相同，已跳过。")
+                print(f"  [提示]  工作流 {f} 与目标完全相同，已跳过。")
                 skipped.append(f)
                 continue
             new_name = resolve_workflow_name(dst_wf, f, source_repo, auto_rename)
@@ -621,19 +794,19 @@ def _run(cmd, cwd=None, redact=""):
         err = (r.stderr or r.stdout or "").strip()
         if redact:
             err = err.replace(redact, "***")
-        print(f"❌ 命令失败：{' '.join(cmd[:3])}…\n   {err}")
+        print(f"[失败] 命令失败：{' '.join(cmd[:3])}…\n   {err}")
         sys.exit(1)
     return r
 
 
 def _clone(token, full_name, dest):
     url = f"https://oauth2:{token}@github.com/{full_name}.git"
-    print(f"ℹ️  正在克隆 {full_name} …")
+    print(f"[提示]  正在克隆 {full_name} …")
     r = subprocess.run(["git", "clone", "--depth", "1", url, dest],
                        capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         err = (r.stderr or "").replace(token, "***").strip()
-        print(f"❌ 克隆失败 {full_name}：{err}")
+        print(f"[失败] 克隆失败 {full_name}：{err}")
         print("   常见原因：仓库不存在 / token 看不到它（私有库要 repo 权限）/ 网络问题。")
         sys.exit(1)
 
@@ -642,15 +815,15 @@ def do_move(token, args):
     """--move 的 GitHub 全流程：校验 → 克隆 → 计划 → 确认 → 合并提交推送 → 可选删源库"""
     source, target = args.move.strip(), args.to.strip()
     if "/" not in source or "/" not in target:
-        print("❌ --move 和 --to 都要写完整名，如 --move dj56959566/old-repo --to dj56959566/main-repo")
+        print("[失败] --move 和 --to 都要写完整名，如 --move dj56959566/old-repo --to dj56959566/main-repo")
         sys.exit(1)
     if source.lower() == target.lower():
-        print("❌ 来源和目标是同一个仓库，退出。")
+        print("[失败] 来源和目标是同一个仓库，退出。")
         sys.exit(1)
     source_repo = source.split("/")[-1]
     subdir = (args.subdir or source_repo).strip().strip("/")
     if not subdir:
-        print("❌ 子目录名不能为空。")
+        print("[失败] 子目录名不能为空。")
         sys.exit(1)
 
     # 校验两个仓库都存在、能读到，并拿到登录人（用于 git 提交身份）
@@ -658,9 +831,9 @@ def do_move(token, args):
         status, data, _ = api_request(token, "GET", f"/repos/{name}")
         if status != 200:
             msg = data.get("message", "") if isinstance(data, dict) else data
-            print(f"❌ {role}仓库 {name} 读不到：HTTP {status} — {msg}")
+            print(f"[失败] {role}仓库 {name} 读不到：HTTP {status} — {msg}")
             sys.exit(1)
-        print(f"ℹ️  {role}仓库：{name}（默认分支 {data.get('default_branch')}）")
+        print(f"[提示]  {role}仓库：{name}（默认分支 {data.get('default_branch')}）")
     status, me, _ = api_request(token, "GET", "/user")
     login = me.get("login", "github-repo-cleaner") if status == 200 else "github-repo-cleaner"
     target_branch = None
@@ -677,7 +850,7 @@ def do_move(token, args):
         # 子目录冲突先定好名字
         final_subdir = resolve_subdir(dst_dir, subdir, args.auto_rename)
         to_copy, to_workflow = plan_move(src_dir, dst_dir, final_subdir)
-        print(f"\n📦 移动计划：{source} → {target}/{final_subdir}/")
+        print(f"\n[移动] 移动计划：{source} → {target}/{final_subdir}/")
         print(f"  源码文件 {len(to_copy)} 个（除 .git、.github/workflows 外，全部进子目录）")
         for f in to_copy[:20]:
             print(f"    + {final_subdir}/{f}")
@@ -687,10 +860,10 @@ def do_move(token, args):
         for f in to_workflow:
             print(f"    + .github/workflows/{os.path.basename(f)}")
         if not to_copy and not to_workflow:
-            print("ℹ️  来源仓库是空的，没什么可搬，退出。")
+            print("[提示]  来源仓库是空的，没什么可搬，退出。")
             return
         if args.dry_run:
-            print("\n✅ --dry-run 演练结束：上面就是会搬的内容，没改目标仓库、没推送、没删源库。")
+            print("\n[成功] --dry-run 演练结束：上面就是会搬的内容，没改目标仓库、没推送、没删源库。")
             return
         if not args.yes:
             ok = input("\n确认按上面搬？输入 y 继续，其他任意键退出：").strip().lower()
@@ -704,7 +877,7 @@ def do_move(token, args):
         r = subprocess.run(["git", "-C", dst_dir, "status", "--porcelain"],
                            capture_output=True, text=True, timeout=60)
         if not r.stdout.strip():
-            print("ℹ️  合并后目标仓库没有任何变化（可能内容完全相同），不用提交。")
+            print("[提示]  合并后目标仓库没有任何变化（可能内容完全相同），不用提交。")
             return
         _run(["git", "-C", dst_dir, "config", "user.name", login])
         _run(["git", "-C", dst_dir, "config", "user.email",
@@ -717,10 +890,10 @@ def do_move(token, args):
                             capture_output=True, text=True, timeout=300)
         if pr.returncode != 0:
             err = (pr.stderr or "").replace(token, "***").strip()
-            print(f"❌ 推送失败：{err}")
+            print(f"[失败] 推送失败：{err}")
             print("   常见原因：你对目标仓库没有写权限（组织仓库要 Write 以上）。")
             sys.exit(1)
-        print(f"\n✅ 已搬完并推送到 {target}"
+        print(f"\n[成功] 已搬完并推送到 {target}"
               f"（分支 {target_branch or '默认分支'}）："
               f"源码 {copied} 个文件进 {final_subdir}/，"
               f"工作流合并 {len(merged)} 个，跳过 {len(skipped)} 个。")
@@ -730,7 +903,7 @@ def do_move(token, args):
         with open(f"moved_{ts}.log", "w", encoding="utf-8") as f:
             f.write(f"# 移动记录 {ts} {source} -> {target}/{final_subdir}/\n")
             f.write(f"源码 {copied} 个，工作流 {merged}，跳过 {skipped}\n")
-        print(f"ℹ️  记录已写入 moved_{ts}.log")
+        print(f"[提示]  记录已写入 moved_{ts}.log")
 
         # 可选：搬完删源库（同样要输 DELETE，三重确认里最后一道）
         if args.delete_source:
@@ -741,10 +914,10 @@ def do_move(token, args):
                 return
             status, data, _ = api_request(token, "DELETE", f"/repos/{source}")
             if status == 204:
-                print(f"✅ 源库 {source} 已删除。")
+                print(f"[成功] 源库 {source} 已删除。")
             else:
                 msg = data.get("message", "") if isinstance(data, dict) else data
-                print(f"❌ 源库删除失败：HTTP {status} — {msg}")
+                print(f"[失败] 源库删除失败：HTTP {status} — {msg}")
 
 
 # ---------- 主流程 ----------
@@ -790,7 +963,7 @@ def main():
                 _pause("  按回车退出…")
                 sys.exit(1)
         else:
-            print("❌ 没找到 token。请先做一步（二选一）：\n"
+            print("[失败] 没找到 token。请先做一步（二选一）：\n"
                   "  export GITHUB_TOKEN=ghp_xxxx   # classic PAT，勾选 delete_repo + read:org\n"
                   "  或 gh auth login                # 用 gh 登录，token 要有 delete_repo 权限\n"
                   "  建 token：https://github.com/settings/tokens")
@@ -803,7 +976,7 @@ def main():
     # ---- 移动合并模式：--move 优先，不走删库流程 ----
     if args.move:
         if not args.to:
-            print("❌ --move 必须配合 --to，如 --move A/old --to A/main")
+            print("[失败] --move 必须配合 --to，如 --move A/old --to A/main")
             sys.exit(1)
         do_move(token, args)
         return
@@ -811,7 +984,7 @@ def main():
     # ---- 1. 确定要删的仓库列表 ----
     if args.file:
         if not os.path.exists(args.file):
-            print(f"❌ 找不到文件：{args.file}")
+            print(f"[失败] 找不到文件：{args.file}")
             sys.exit(1)
         targets = []
         for line in open(args.file, encoding="utf-8"):
@@ -819,20 +992,20 @@ def main():
             if name and not name.startswith("#") and "/" in name:
                 targets.append(name)
         if not targets:
-            print(f"❌ {args.file} 里没有有效的 owner/repo 行")
+            print(f"[失败] {args.file} 里没有有效的 owner/repo 行")
             sys.exit(1)
-        print(f"ℹ️  从文件读到 {len(targets)} 个待删仓库")
+        print(f"[提示]  从文件读到 {len(targets)} 个待删仓库")
         repos = [{"full_name": n} for n in targets]
     else:
         # 先拿当前登录人，顺便校验 token 是否有效
         status, me, headers = api_request(token, "GET", "/user")
         if status != 200:
             msg = me.get("message", "") if isinstance(me, dict) else me
-            print(f"❌ token 校验失败：HTTP {status} — {msg}")
+            print(f"[失败] token 校验失败：HTTP {status} — {msg}")
             sys.exit(1)
         login = me["login"]
         check_scopes(headers)
-        print(f"ℹ️  当前账号：{login}")
+        print(f"[提示]  当前账号：{login}")
 
         # 决定扫哪些 owner
         owners = []
@@ -846,7 +1019,7 @@ def main():
             orgs, _ = api_get_all(token, "/user/orgs")
             owners = [("org", o["login"]) for o in orgs]
             if not owners:
-                print("ℹ️  你没有加入任何组织")
+                print("[提示]  你没有加入任何组织")
         else:  # all
             owners = [("user", login)]
             orgs, _ = api_get_all(token, "/user/orgs")
@@ -859,7 +1032,7 @@ def main():
             else:
                 items, _ = api_get_all(
                     token, "/user/repos?affiliation=owner&sort=updated")
-            print(f"ℹ️  {owner}：{len(items)} 个仓库")
+            print(f"[提示]  {owner}：{len(items)} 个仓库")
             repos.extend(items)
 
         # 去重 + 过滤 + 排序
@@ -884,7 +1057,7 @@ def main():
         repos.sort(key=lambda r: r["full_name"].lower())
 
         if not repos:
-            print("ℹ️  没有符合条件的仓库，退出。")
+            print("[提示]  没有符合条件的仓库，退出。")
             return
 
         # 备份完整清单（删前必做）
@@ -894,31 +1067,23 @@ def main():
             for r in repos:
                 f.write(f"{r['full_name']}\t"
                         f"{'private' if r.get('private') else 'public'}\t"
-                        f"★{r.get('stargazers_count', 0)}\t"
+                        f"*{r.get('stargazers_count', 0)}\t"
                         f"{(r.get('updated_at') or '')[:10]}\t"
                         f"{(r.get('description') or '').replace(chr(10), ' ')}\n")
-        print(f"ℹ️  完整清单已备份到 repos_list.txt（{len(repos)} 个）")
+        print(f"[提示]  完整清单已备份到 repos_list.txt（{len(repos)} 个）")
 
         # ---- 2. 展示 + 交互勾选 ----
-        print(f"\n共 {len(repos)} 个仓库：")
-        print(f"{'序号':>4}  {'仓库':<45} {'可见性':<8} {'★':>4}  {'更新':<10}  描述")
-        for i, r in enumerate(repos, 1):
-            desc = (r.get("description") or "")[:40].replace("\n", " ")
-            vis = "private" if r.get("private") else "public"
-            if r.get("archived"):
-                vis += "/归档"
-            print(f"{i:>4}  {r['full_name']:<45} {vis:<8} "
-                  f"{r.get('stargazers_count', 0):>4}  "
-                  f"{(r.get('updated_at') or '')[:10]:<10}  {desc}")
+        # 一页 10 个，可以翻页；序号是全局序号，勾选还用这个号
+        _show_repos_paged(repos)
 
         if args.list_only:
-            print("\n✅ --list-only 模式：只列清单，不删除。清单在 repos_list.txt")
+            print("\n[成功] --list-only 模式：只列清单，不删除。清单在 repos_list.txt")
             return
 
         raw = input("\n要删除哪些？输入序号，如 1,3,5-8 / all=全部 / 0=退出：").strip()
         picked = parse_selection(raw, len(repos))
         if picked is None:
-            print("❌ 输入格式不对，退出。示例：1,3,5-8")
+            print("[失败] 输入格式不对，退出。示例：1,3,5-8")
             sys.exit(1)
         if not picked:
             print("已退出，什么都没删。")
@@ -928,13 +1093,13 @@ def main():
 
     # ---- 3. 三重确认 ----
     action = "归档" if args.archive else "删除"
-    print(f"\n⚠️  即将{action}以下 {len(targets)} 个仓库（{action}后"
+    print(f"\n[警告]  即将{action}以下 {len(targets)} 个仓库（{action}后"
           f"{'可恢复' if args.archive else '不可恢复，代码/Issues/PR 全没了'}）：")
     for n in targets:
         print(f"  - {n}")
 
     if args.dry_run:
-        print("\n✅ --dry-run 演练结束：上面这些就是会删的，没真删。")
+        print("\n[成功] --dry-run 演练结束：上面这些就是会删的，没真删。")
         return
 
     if args.file and args.yes and args.force:
@@ -963,11 +1128,11 @@ def main():
             status, data, _ = api_request(token, "DELETE", f"/repos/{name}")
             good = status == 204
         if good:
-            print(f"  ✅ {action}成功：{name}")
+            print(f"  [成功] {action}成功：{name}")
             ok_list.append(name)
         else:
             msg = data.get("message", "") if isinstance(data, dict) else data
-            print(f"  ❌ {action}失败：{name} — HTTP {status} — {msg}")
+            print(f"  [失败] {action}失败：{name} — HTTP {status} — {msg}")
             if status == 403:
                 print("     403 一般是没权限：token 缺 delete_repo，"
                       "或你不是该组织仓库的管理员。")
