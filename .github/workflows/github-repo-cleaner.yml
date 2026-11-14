@@ -1,11 +1,18 @@
 # 打包 gsoft/clean_repos.py 为 Windows exe（PyInstaller）
-# 已按 soft 仓库实际结构修好：脚本在 gsoft/ 子目录，不在根目录，
-# 所以打包命令用的是 gsoft/clean_repos.py，不是 clean_repos.py。
-# 用法：把这个文件覆盖到仓库的 .github/workflows/gsoft-exe.yml，
-# 然后去 Actions 页 → Build Gsoft.EXE → Run workflow 手动跑一次。
-# 跑完在 Artifacts 里下载 github-repo-cleaner-windows.zip，
-# 解压得到 github-repo-cleaner.exe，双击进中文菜单，先问你要 Token。
+# 注意：这是你仓库里现在用的那个文件，名字是 github-repo-cleaner.yml，
+# 不是 gsoft-exe.yml——覆盖的时候别传错文件名。
+# 已修好两处：
+#  1. 打包命令是 gsoft/clean_repos.py（脚本在 gsoft/ 子目录）
+#  2. 手动跑也发 Release v1.2，主页右边“发行版”能看到；
+#     以前那句 if: startsWith(github.ref, 'refs/tags/') 只在打 tag 时才发，
+#     手动跑只出 Artifacts，所以主页一直是空的。
+# 用法：把这个文件覆盖到仓库的 .github/workflows/github-repo-cleaner.yml，
+# 然后去 Actions 页 → Build github-repo-cleaner.exe → Run workflow 手动跑一次，
+# 跑完回主页看，发行版里会出现 v1.2，点进去就能下 exe。
 name: Build github-repo-cleaner.exe
+
+permissions:
+  contents: write
 
 on:
   workflow_dispatch:
@@ -30,8 +37,12 @@ jobs:
         with:
           name: github-repo-cleaner-windows
           path: dist/github-repo-cleaner.exe
-      - name: 发到 Release（仅打 tag 时）
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: 发到 Release（手动跑也发，主页能看到）
+        # 手动跑时 tag 不存在就用 v1.2，打 tag 时用 tag 名；重复跑会更新同一个 Release，不会重复建
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2' }}
+          generate_release_notes: true
+          make_latest: true
           files: dist/github-repo-cleaner.exe
