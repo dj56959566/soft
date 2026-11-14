@@ -5,7 +5,7 @@
 # 然后去 Actions 页 → Build Gsoft.EXE → Run workflow 手动跑一次。
 # 跑完在 Artifacts 里下载 github-repo-cleaner-windows.zip，
 # 解压得到 github-repo-cleaner.exe，双击进中文菜单，先问你要 Token。
-name: Build Gsoft.EXE
+name: Build github-repo-cleaner.exe
 
 on:
   workflow_dispatch:
