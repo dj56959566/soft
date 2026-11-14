@@ -7,7 +7,7 @@ GitHub 批量删库工具 — 扫描自己 / 所有组织仓库，可选性删�
   1. 自动扫描：个人仓库 + 你加入的所有组织仓库（默认 --scope all）
      也可只扫一个账号/组织：--owner dj56959566 或 --org xxx
   2. 先列清单、再交互勾选，不会一上来就删
-  3. 三重保险：1. 再次确认清单 2. 输入 DELETE 3. 逐个删、逐个回显结果
+  3. 两次确认：1. 选完输 y 确认清单 2. 再输 y 最后确认，逐个删、逐个回显结果
   4. 删除不可逆！删前自动把完整清单备份到 repos_list.txt，
      删完写删除日志 deleted_YYYYMMDD_HHMMSS.log
   5. 只用 Python 标准库，不用装任何依赖；gh 已登录时可自动取 token
@@ -59,13 +59,11 @@ Token 准备（二选一，token 绝不要写进脚本里）：
   #    带参数跑（如 --list-only / --move）还是走命令行模式，不进菜单
 
 作者：djkyc / 生成时间：2026-11-14
-版本：v1.6（菜单先选范围 + 清单一页 10 个可翻页）
-  v1.6 改动：菜单里看清单/删库/归档前先选范围——1 个人仓库 / 2 组织仓库
-  （多个组织再选一个）/ 9 全部，选完只列那个范围的仓库；清单一页显示 10 个，
-  n 下一页 / p 上一页 / 数字跳页 / q 结束浏览去勾选，序号是全局序号，
-  翻页后勾选还用这个号。粘贴说明：黑窗口里左键是选中、右键才是粘贴，
-  左键点一下粘贴不了；想用 Ctrl+V 就点窗口左上角图标 -> 属性 -> 选项
-  -> 勾上“启用 Ctrl 键快捷方式”。
+版本：v1.9（翻页提示改清楚 + 工作流自动读版本号发 Release）
+  v1.9 改动：翻页提示原来挤在一行里，看完输 q 不明显，改成单独成段、
+  空行隔开，q 放最前面：看完了吗？输 q 结束浏览去勾选；工作流不再写死
+  v1.5，改为从 clean_repos.py 里自动读 VERSION，每次改代码升版本，
+  重跑打包就发对应版本号的新 Release，覆盖旧文件。
   v1.3 改动：隐藏输入（getpass）在 Windows 黑窗口右键粘贴没反应，改成普通 input，
   粘贴用 Ctrl+V，校验通过后自动清屏；提示区单独一行给 https://github.com/settings/tokens，
   输 o 可直接打开浏览器去建 Token。
@@ -84,7 +82,7 @@ import webbrowser
 from datetime import datetime
 
 API = "https://api.github.com"
-VERSION = "v1.6"
+VERSION = "v1.9"
 
 
 # ---------- 工具函数 ----------
@@ -395,8 +393,10 @@ def _run_self(extra_args):
 
 
 def _choose_scope(token):
-    """菜单里先选范围：1 个人仓库 / 2 组织仓库，选完只列那个范围的仓库。
+    """菜单里先选范围：每个范围单独一行带序号，中间空一行，看得清楚。
 
+    每个组织单独一个序号（1 个人、2 组织A、3 组织B……），不用再输 2-1 这种
+    两层序号；每个范围后面还显示有几个仓库，一眼就能分清。
     返回：传给子进程的范围参数，如 ["--owner", "djkyc"] 或 ["--org", "xxx"]，
     选 9 是全部（个人+所有组织），选 0 或输错返回 None（回菜单）。
     """
@@ -407,40 +407,43 @@ def _choose_scope(token):
     login = me.get("login", "")
     orgs, _ = api_get_all(token, "/user/orgs")
     org_names = [o.get("login", "") for o in orgs if o.get("login")]
+
+    # 每个范围有几个仓库，先数一下，显示出来才分得清
+    def _count(kind, owner):
+        try:
+            if kind == "org":
+                items, _ = api_get_all(token, f"/orgs/{owner}/repos?type=all")
+            else:
+                items, _ = api_get_all(token, "/user/repos?affiliation=owner&sort=updated")
+            return len(items)
+        except Exception:
+            return None
+
+    options = []  # (序号, 类型, 名字, 个数)
+    options.append((1, "user", login, _count("user", login)))
+    for i, name in enumerate(org_names, 2):
+        options.append((i, "org", name, _count("org", name)))
+
     print()
-    print("  先选看哪个范围：")
-    print(f"  1. 个人仓库（{login}）")
-    if org_names:
-        print("  2. 组织仓库")
-        for i, name in enumerate(org_names, 1):
-            print(f"     2-{i} {name}")
-    else:
-        print("  2. 组织仓库（你没有加入任何组织）")
-    print("  9. 全部（个人 + 所有组织）")
+    print("=" * 56)
+    print("  先选看哪个范围")
+    print("=" * 56)
+    print()
+    for num, kind, name, cnt in options:
+        label = "个人仓库" if kind == "user" else "组织仓库"
+        cnt_text = f"（{cnt} 个仓库）" if cnt is not None else ""
+        print(f"  {num}. {label}：{name} {cnt_text}")
+        print()
+    print("  9. 全部：个人 + 所有组织")
+    print()
     print("  0. 返回菜单")
-    sel = input("  请输入（1 / 2 / 9 / 0）：").strip()
-    if sel == "0" or sel == "":
+    print("-" * 56)
+    sel = input("  请输入序号：").strip()
+    if sel in ("0", ""):
         return None
-    if sel == "1":
-        return ["--owner", login]
     if sel == "9":
         return ["--scope", "all"]
-    if sel == "2":
-        if not org_names:
-            print("  [提示] 你没有加入任何组织，先选 1 看个人仓库。")
-            return None
-        if len(org_names) == 1:
-            return ["--org", org_names[0]]
-        pick = input(f"  选哪个组织（1-{len(org_names)}）：").strip()
-        try:
-            n = int(pick)
-        except ValueError:
-            print("  [失败] 输入不对，回到菜单。")
-            return None
-        if 1 <= n <= len(org_names):
-            return ["--org", org_names[n - 1]]
-        print("  [失败] 没有这个组织，回到菜单。")
-        return None
+    # 兼容老输入 2-1
     if sel.startswith("2-"):
         try:
             n = int(sel[2:])
@@ -451,6 +454,16 @@ def _choose_scope(token):
             return ["--org", org_names[n - 1]]
         print("  [失败] 没有这个组织，回到菜单。")
         return None
+    try:
+        n = int(sel)
+    except ValueError:
+        print("  [失败] 输入不对，回到菜单。")
+        return None
+    for num, kind, name, _cnt in options:
+        if n == num:
+            if kind == "user":
+                return ["--owner", name]
+            return ["--org", name]
     print("  [失败] 没有这个选项，回到菜单。")
     return None
 
@@ -464,7 +477,7 @@ def show_menu(token):
         print("  GitHub 批量删库工具 — 中文菜单")
         print("=" * 56)
         print("  1. 查看仓库清单（只看不删，最安全）")
-        print("  2. 勾选删除仓库（列清单 → 输序号 → 输 DELETE 确认）")
+        print("  2. 勾选删除仓库（列清单 → 输序号 → 输 y 两次确认）")
         print("  3. 移动合并仓库（A 仓库搬到 B 仓库的子目录下）")
         print("  4. 归档仓库（代替删除，可恢复）")
         print("  0. 退出")
@@ -487,7 +500,7 @@ def show_menu(token):
             scope = _choose_scope(token)
             if scope is None:
                 continue
-            print("  接下来会列出这个范围的仓库，你输序号勾选，删前还要输 DELETE 确认。")
+            print("  接下来会列出这个范围的仓库，你输序号勾选，删前还要输 y 两次确认。")
             _run_self(scope)
             _pause()
         elif choice == "3":
@@ -560,9 +573,19 @@ def _show_repos_paged(repos):
         _print_repo_page(repos, page, total_pages)
         if total_pages == 1:
             return
+        # 翻页提示单独成段、空行隔开，q 放最前面：看完了就输 q，去勾选要删的仓库
+        print()
+        print("-" * 56)
+        print("  看完了吗？")
+        print()
+        print("  输 q  结束浏览，去勾选要删除的仓库")
+        print()
+        print("  输 n  下一页")
+        print("  输 p  上一页")
+        print("  输数字 跳到第几页（比如输 3 跳到第 3 页）")
+        print("-" * 56)
         try:
-            nav = input(
-                "  翻页：n 下一页 / p 上一页 / 数字跳页 / q 结束浏览去勾选：").strip().lower()
+            nav = input("  请输入 q / n / p / 数字：").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -572,7 +595,7 @@ def _show_repos_paged(repos):
             if page < total_pages:
                 page += 1
             else:
-                print("  已经是最后一页了。")
+                print("  已经是最后一页了，输 q 去勾选要删除的仓库。")
             continue
         if nav == "p":
             if page > 1:
@@ -583,7 +606,7 @@ def _show_repos_paged(repos):
         try:
             n = int(nav)
         except ValueError:
-            print("  输入不对，输 n / p / 数字 / q。")
+            print("  输入不对：看完输 q 去勾选，还想翻页就输 n / p / 数字。")
             continue
         if 1 <= n <= total_pages:
             page = n
@@ -905,11 +928,11 @@ def do_move(token, args):
             f.write(f"源码 {copied} 个，工作流 {merged}，跳过 {skipped}\n")
         print(f"[提示]  记录已写入 moved_{ts}.log")
 
-        # 可选：搬完删源库（同样要输 DELETE，三重确认里最后一道）
+        # 可选：搬完删源库（输 y 确认）
         if args.delete_source:
             typed = input(f"\n源库 {source} 已搬完，是否删除源库？删除不可逆，"
-                          f"请一字不差输入 DELETE 删除，不输则保留源库：").strip()
-            if typed != "DELETE":
+                          f"输入 y 删除，其他任意键保留源库：").strip().lower()
+            if typed != "y":
                 print("已保留源库。")
                 return
             status, data, _ = api_request(token, "DELETE", f"/repos/{source}")
@@ -937,7 +960,7 @@ def main():
     p.add_argument("--archive", action="store_true",
                    help="归档代替删除（可恢复）：对选中仓库做 PATCH archived=true")
     p.add_argument("--token", help="GitHub token（不推荐命令行传，优先用环境变量）")
-    p.add_argument("--yes", action="store_true", help="跳过第一次 y/n 确认（仍需 DELETE）")
+    p.add_argument("--yes", action="store_true", help="跳过第一次 y 确认（仍需第二次 y 确认）")
     p.add_argument("--force", action="store_true",
                    help="配合 --file --yes 做完全非交互（危险，仍会写日志）")
     # 移动合并
@@ -945,7 +968,7 @@ def main():
     p.add_argument("--to", dest="to", help="目标仓库完整名，如 --to dj56959566/main-repo")
     p.add_argument("--subdir", help="搬到目标仓库下的子目录名，默认=来源仓库名")
     p.add_argument("--delete-source", action="store_true",
-                   help="搬完后删除源库（仍需输入 DELETE 确认）")
+                   help="搬完后删除源库（仍需输入 y 确认）")
     p.add_argument("--auto-rename", action="store_true",
                    help="同名工作流/子目录自动改名，不逐个问你")
     args = p.parse_args()
@@ -1110,9 +1133,10 @@ def main():
             if ok != "y":
                 print("已取消，什么都没删。")
                 return
-        typed = input(f"最后确认：请一字不差输入 DELETE 以{action}这 {len(targets)} 个仓库：").strip()
-        if typed != "DELETE":
-            print("输入不是 DELETE，已取消，什么都没删。")
+        # 最后确认直接输 y 就行，不用再一字不差输 DELETE
+        ok2 = input(f"最后确认：真的要{action}这 {len(targets)} 个仓库？输入 y 确认，其他任意键取消：").strip().lower()
+        if ok2 != "y":
+            print("已取消，什么都没删。")
             return
 
     # ---- 4. 逐个执行 ----
