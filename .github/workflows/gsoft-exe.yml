@@ -17,7 +17,7 @@
 #      解压得到 github-repo-cleaner.exe，双击会闪退是正常的——它是命令行工具，
 #      要在 cmd / PowerShell 里跑：.\github-repo-cleaner.exe --help
 #      token 还是用环境变量：set GITHUB_TOKEN=ghp_xxxx
-name: Build EXE
+name: Build Gsoft.EXE
 
 on:
   workflow_dispatch:
