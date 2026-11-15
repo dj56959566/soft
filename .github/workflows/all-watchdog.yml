@@ -1,4 +1,4 @@
-name: Nezha watchdog
+name: All watchdog
 
 # Every 5 minutes, check both Nezha dashboards. If one is down (Cloudflare
 # Tunnel error 1033/530, timeout, non-200), call the Northflank API to
