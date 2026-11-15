@@ -1,5 +1,7 @@
 # Nezha watchdog — 哪吒自动巡检
 
+# watchdog2.py all-watchdog.yml------是拉启服务目录下的所有应用
+
 每 5 分钟查一次两个哪吒面板，掉了就自动恢复，不用再手动进 Northflank。
 
 - `https://nf.djbadboy.nyc.mn/` — Northflank 项目 `test`，服务 `nezha`
