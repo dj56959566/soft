@@ -152,6 +152,9 @@ def list_projects_for_token(token):
                           f"name={p.get('name')} slug={p.get('slug')}")
     except Exception:
         pass
+
+
+def tg_send(text):
     if not TG_TOKEN or not TG_CHAT:
         print("  [tg] no TG_BOT_TOKEN/TG_CHAT_ID, skipping alert")
         return
