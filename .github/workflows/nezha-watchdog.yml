@@ -1,0 +1,49 @@
+name: Nezha watchdog
+
+# Every 5 minutes, check both Nezha dashboards. If one is down (Cloudflare
+# Tunnel error 1033/530, timeout, non-200), call the Northflank API to
+# resume it to 1 instance, wait 2 minutes, re-check, and alert on Telegram.
+# A healthy check sends no message.
+#
+# Required GitHub Secret:
+#   NF_API_TOKEN  Northflank API token for the first service (test/nezha).
+#                 Role needs: Project > Services > General > Read + Update.
+#                 Create it in Northflank: Team Settings > API > Roles,
+#                 then Team Settings > API > Tokens > Create API token.
+#                 Never paste the token in chat or commit it to the repo.
+# Optional GitHub Secret:
+#   NF_API_TOKEN_2  Northflank API token for the second service
+#                 (bbqtest/docker), only needed if it is in a different
+#                 team/account. If unset, it falls back to NF_API_TOKEN.
+# Optional GitHub Secrets (alerts only; watchdog still resumes without them):
+#   TG_BOT_TOKEN  Telegram bot token
+#   TG_CHAT_ID    Telegram chat id to alert
+#
+# Note: GitHub disables scheduled workflows after 60 days with no repo
+# activity. If this ever stops running, open Actions and click Run workflow
+# once, or push any small change to the repo.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check and auto-recover
+        env:
+          NF_API_TOKEN: ${{ secrets.NF_API_TOKEN }}
+          NF_API_TOKEN_2: ${{ secrets.NF_API_TOKEN_2 }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python3 watchdog.py
