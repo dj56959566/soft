@@ -182,38 +182,55 @@ def tg_send(text):
         print(f"  [tg] FAILED: {e}")
 
 
+def find_instances(obj, depth=0):
+    """Recursively find an instances/replicas count anywhere in a
+    service object. Returns an int or None."""
+    if depth > 4 or not isinstance(obj, dict):
+        return None
+    for key in ("instances", "replicas", "desiredInstances",
+                "runningInstances", "availableInstances"):
+        if isinstance(obj.get(key), int):
+            return obj[key]
+    for val in obj.values():
+        if isinstance(val, dict):
+            found = find_instances(val, depth + 1)
+            if found is not None:
+                return found
+        elif isinstance(val, list):
+            for item in val:
+                found = find_instances(item, depth + 1)
+                if found is not None:
+                    return found
+    return None
+
+
+def find_status_texts(obj, depth=0):
+    """Recursively collect status strings from a service object."""
+    texts = []
+    if depth > 4 or not isinstance(obj, dict):
+        return texts
+    for key, val in obj.items():
+        if "status" in key.lower() or "state" in key.lower():
+            if isinstance(val, str):
+                texts.append(val)
+            elif isinstance(val, dict):
+                texts += find_status_texts(val, depth + 1)
+    for val in obj.values():
+        if isinstance(val, dict):
+            texts += find_status_texts(val, depth + 1)
+    return texts
+
+
 def service_is_down(svc):
     """Decide from the API service object whether it is paused / at 0.
     Returns (down: bool, reason: str). Unknown shape = not down, never
     resume a running service blindly."""
     if not isinstance(svc, dict):
         return False, "not an object"
-    # Instances, wherever the API puts them.
-    instances = None
-    for path in (("deployment", "instances"), ("spec", "instances"),
-                 ("deployment", "replicas"), ("instances",)):
-        cur = svc
-        for key in path:
-            cur = cur.get(key) if isinstance(cur, dict) else None
-        if isinstance(cur, int):
-            instances = cur
-            break
+    instances = find_instances(svc)
     if instances == 0:
         return True, "instances=0"
-    # Status strings, wherever they are.
-    status_texts = []
-    for key in ("lifecycleStatus", "status"):
-        val = svc.get(key)
-        if isinstance(val, str):
-            status_texts.append(val)
-        elif isinstance(val, dict):
-            for sub in val.values():
-                if isinstance(sub, str):
-                    status_texts.append(sub)
-                elif isinstance(sub, dict):
-                    status_texts += [v for v in sub.values()
-                                     if isinstance(v, str)]
-    joined = " ".join(status_texts).lower()
+    joined = " ".join(find_status_texts(svc)).lower()
     for word in ("paused", "stopped", "scaled_to_zero", "scaled to zero"):
         if word in joined:
             return True, f"status={joined}"
@@ -279,9 +296,30 @@ def resume_all_in_project(project, tokens):
         name = svc.get("name") or sid
         if not sid:
             continue
-        down, reason = service_is_down(svc)
+        # The list response has no instance count (it only carries the
+        # last deployment status), so fetch the service detail, which
+        # does carry the running instance count.
+        detail = svc
+        for label, token in tokens:
+            status, body = nf_get(
+                f"/projects/{project}/services/{sid}", token)
+            if 200 <= status < 300:
+                try:
+                    data = json.loads(body)
+                    detail = (data.get("data", {}).get("service")
+                              or data.get("data") or svc)
+                    break
+                except Exception:
+                    break
+            if status in (401, 404):
+                continue
+            break
+        down, reason = service_is_down(detail)
         if not down:
             print(f"  [project {project}] {name} ({sid}) up ({reason})")
+            if "unknown" in reason:
+                print(f"  [project {project}] detail keys for {sid}: "
+                      f"{json.dumps(detail)[:600]}")
             continue
         print(f"  [project {project}] {name} ({sid}) DOWN ({reason}), resuming...")
         if resume_service(project, sid, tokens):
