@@ -54,12 +54,21 @@ Token 准备（二选一，token 绝不要写进脚本里）：
   python3 clean_repos.py --move dj56959566/old-repo --to dj56959566/main-repo --auto-rename
 
   # 8) v1.2：双击 exe / 不带参数直接跑，进中文主菜单
-  #    启动时先问你要 token（谁用问谁要，隐藏输入，仅本次有效，不保存到文件）
-  #    菜单：1 看清单 2 勾选删除 3 移动合并 4 归档 0 退出
+  #    启动时先问你要 token；v2.1 起可选择保存在本机，下次不用再输
+  #    （只存你自己电脑的用户目录里，菜单 5 可更换/清除，绝不传到仓库）
+  #    菜单：1 看清单 2 勾选删除 3 移动合并/转移 4 归档 5 Token 管理 0 退出
   #    带参数跑（如 --list-only / --move）还是走命令行模式，不进菜单
+  # 9) v2.1 移动合并（选 3）：先列清单再输序号选来源和目标，不用手打完整名；
+  #    源码进 目标/<来源仓库名>/，工作流自动合并到目标 .github/workflows/；
+  #    另有“转移仓库”：整个仓库直接移到组织/账号名下（GitHub transfer API，
+  #    Issues/PR/Star 都跟着走），这才是“直接移到组织下”。
 
 作者：djkyc / 生成时间：2026-11-14
-版本：v2.0（Release 改成 zip 压缩包 + 只保留最新 2 个发行版）
+版本：v2.1（Token 可保存 + 移动按序号选 + 转移到组织 + exe 带图标）
+  v2.1 改动：Token 可选保存在本机（~/.github-repo-cleaner-token，600 权限），
+  下次直接用，不用再输；移动合并先看清单、输序号选来源/目标；
+  新增仓库转移（--transfer / 菜单 3 里选 2），可直接移到组织下；
+  打包加 --icon gsoft/icon.ico，exe 有好看的图标了。
   v2.0 改动：主页发行版里不再直接放单个 exe，改成 zip 压缩包
   github-repo-cleaner-windows.zip，下载后解压就能用；每次发新版后
   自动删掉旧发行版，只保留最新 2 个版本，超过的不要了。
@@ -81,7 +90,69 @@ import webbrowser
 from datetime import datetime
 
 API = "https://api.github.com"
-VERSION = "v2.0"
+VERSION = "v2.1"
+
+
+# ---------- Token 本地保存（v2.1 新增） ----------
+# 保存位置：只存你自己电脑的用户目录里，不存在 exe 旁边、不进仓库。
+#   Windows：C:\Users\<你>\.github-repo-cleaner-token
+#   Linux/Mac：~/.github-repo-cleaner-token
+# 文件是纯文本（GitHub token 本身就是一串字符，没法加密存还让脚本直接用），
+# 所以只放自己电脑上，绝不要发给别人、不要传到 GitHub 仓库里。
+# 权限：Linux/Mac 上写成 600（只有你自己能读）；Windows 上用户目录默认只有你能读。
+# 不想保存就别选保存，以前“仅本次有效”的用法一点没变；随时菜单 5 可清除。
+def _token_store_path():
+    return os.path.join(os.path.expanduser("~"), ".github-repo-cleaner-token")
+
+
+def _save_token(token):
+    """把 token 存到本机用户目录，下次不用再输。返回 True/False。"""
+    try:
+        p = _token_store_path()
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(token.strip() + "\n")
+        try:
+            os.chmod(p, 0o600)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        print(f"  [失败] Token 没存上：{e}")
+        return False
+
+
+def _load_saved_token():
+    """读已保存的 token，没有/读不到返回 ""。"""
+    try:
+        p = _token_store_path()
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                content = f.read().strip()
+            if content:
+                return content.split()[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _clear_saved_token():
+    """删掉已保存的 token，返回 True=删掉了，False=本来就没有。"""
+    try:
+        p = _token_store_path()
+        if os.path.isfile(p):
+            os.remove(p)
+            return True
+    except Exception as e:
+        print(f"  [失败] 清除失败：{e}")
+    return False
+
+
+def _mask_token(tok):
+    """只露头尾，中间打码：ghp_xxxx…abcd，绝不在屏幕上打出完整 token。"""
+    t = (tok or "").strip()
+    if len(t) <= 8:
+        return "****"
+    return f"{t[:4]}****{t[-4:]}"
 
 
 # ---------- 工具函数 ----------
@@ -112,12 +183,18 @@ def _read_token_file():
 
 
 def get_token(args):
-    """token 来源：--token > GITHUB_TOKEN 环境变量 > gh auth token > token.txt"""
+    """token 来源（按顺序，先找到的先用）：
+    --token > GITHUB_TOKEN 环境变量 > 本机已保存的 token > gh auth token > token.txt"""
     if args.token:
         return args.token.strip()
     env = os.environ.get("GITHUB_TOKEN", "").strip()
     if env:
         return env
+    saved = _load_saved_token()
+    if saved:
+        print(f"[提示]  已使用本机保存的 Token（{_mask_token(saved)}），不用再输。")
+        print("        想换/清除：菜单里选 5，或跑一次 --clear-token。")
+        return saved
     try:
         r = subprocess.run(["gh", "auth", "token"],
                            capture_output=True, text=True, timeout=10)
@@ -127,6 +204,22 @@ def get_token(args):
     except Exception:
         pass
     return _read_token_file()
+
+
+def _ask_save_token(token):
+    """校验通过后问一句要不要保存：输 y 才存，其他键不存。"""
+    try:
+        ans = input("  是否把这个 Token 保存在本机，下次不用再输？\n"
+                    "  只存在你自己电脑的用户目录里（菜单 5 可清除），输 y 保存，其他键不保存："
+                    ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if ans != "y":
+        print("  好，不保存，下次启动还要再输一次。")
+        return
+    if _save_token(token):
+        print(f"  [成功] 已保存到 {_token_store_path()}，下次启动直接用。")
+        print("        换电脑/换号就菜单 5 清除重输；这个文件别发给别人、别传仓库。")
 
 
 def api_request(token, method, path, data=None):
@@ -291,7 +384,8 @@ def _clear_screen():
 def prompt_token():
     """启动时一步一步问你要 token：谁用问谁要。
 
-    规则：仅本次运行有效、绝不写进文件；
+    规则：默认仅本次运行有效；校验通过后问你一句要不要保存在本机，
+    输 y 才存（只存你自己电脑的用户目录里，菜单 5 可清除），不输就不存；
     每输一次就去 GitHub 校验一次，不对就中文告诉你、让你重输，最多 3 次；
     输 q 或直接回车空着就退出。
     返回：校验通过的 token；3 次都不对或用户退出时返回 ""。
@@ -316,7 +410,8 @@ def prompt_token():
     print("  -> 属性 -> 选项 -> 勾上“启用 Ctrl 键快捷方式”，以后 Ctrl+V 就能直接粘贴。")
     print("  还没建 Token 就输 1 回车，打开上面那个网页去建。")
     print("  粘贴后按回车会显示收到几位、开头是什么，校验通过后会自动清屏。")
-    print("  这个 Token 只在本次运行里用，不会保存到任何文件里。")
+    print("  默认只在本次运行里用；校验通过后问你一句，输 y 才会保存在本机，")
+    print("  下次不用再输（只存你自己电脑的用户目录里，菜单 5 可清除）。")
     print("-" * 56)
     # 输 1/o/0 打开网页、剪贴板是空的，都不算一次校验机会；只有真拿 Token 去校验了才算
     # 注：字母 o 和数字 0 长得像，都当成打开网页，免得输错。
@@ -356,6 +451,7 @@ def prompt_token():
             _clear_screen()
             print(f"  [成功] Token 有效，当前账号：{data.get('login')}")
             check_scopes(headers)
+            _ask_save_token(tok)
             return tok
         msg = data.get("message", "") if isinstance(data, dict) else data
         print(f"  [失败] Token 不对：HTTP {status} — {msg}")
@@ -467,6 +563,253 @@ def _choose_scope(token):
     return None
 
 
+def fetch_all_repos(token):
+    """拉个人 + 所有组织的全部仓库，去重、按名字排好，返回 list[dict]。
+
+    移动/转移选仓库时用：先把清单列出来，再输序号选，不用手打完整名。
+    """
+    status, me, _ = api_request(token, "GET", "/user")
+    if status != 200:
+        msg = me.get("message", "") if isinstance(me, dict) else me
+        print(f"  [失败] 拿不到当前账号：HTTP {status} — {msg}")
+        return []
+    login = me.get("login", "")
+    orgs, _ = api_get_all(token, "/user/orgs")
+    owners = [("user", login)] + [("org", o["login"]) for o in orgs if o.get("login")]
+    repos, seen = [], set()
+    for kind, owner in owners:
+        if kind == "org":
+            items, _ = api_get_all(token, f"/orgs/{owner}/repos?type=all")
+        else:
+            items, _ = api_get_all(token, "/user/repos?affiliation=owner&sort=updated")
+        print(f"  [提示] {owner}：{len(items)} 个仓库")
+        for r in items:
+            if r.get("full_name") and r["full_name"] not in seen:
+                seen.add(r["full_name"])
+                repos.append(r)
+    repos.sort(key=lambda r: r["full_name"].lower())
+    return repos
+
+
+def _pick_repo_by_number(repos, prompt):
+    """从已列出的清单里选一个仓库：输前面的序号就行，也兼容直接输完整名。
+
+    返回完整名（owner/repo），输 0 / q / 空 = 取消返回 None。
+    """
+    while True:
+        try:
+            raw = input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if raw.lower() in ("0", "q", "quit", "exit", ""):
+            return None
+        if "/" in raw:
+            # 直接输了完整名：清单里有就认，没有也先认下，后面校验会报错
+            return raw
+        try:
+            n = int(raw)
+        except ValueError:
+            print("  [失败] 输序号就行（比如输 3），或直接输完整名（账号/仓库名），输 0 取消。")
+            continue
+        if 1 <= n <= len(repos):
+            return repos[n - 1]["full_name"]
+        print(f"  [失败] 没有第 {n} 个，只有 1-{len(repos)} 个，输 0 取消。")
+
+
+def _choose_new_owner(token):
+    """转移仓库时选新东家：个人账号 + 你加入的组织，每行一个序号。
+
+    返回选中的账号/组织名，取消返回 None。
+    注意：移到组织下要你在那个组织里有建库权限（一般是 Owner/Admin），
+    否则 GitHub 会报 403，转移做不成。
+    """
+    status, me, _ = api_request(token, "GET", "/user")
+    if status != 200:
+        print("  [失败] 拿不到当前账号，先检查 Token。")
+        return None
+    login = me.get("login", "")
+    orgs, _ = api_get_all(token, "/user/orgs")
+    org_names = [o.get("login", "") for o in orgs if o.get("login")]
+    options = [login] + org_names
+    print()
+    print("  移到谁名下（整个仓库直接过去，Issues/PR/Star 都跟着走）：")
+    print()
+    print(f"  1. 个人账号：{login}")
+    for i, name in enumerate(org_names, 2):
+        print(f"  {i}. 组织：{name}")
+    print()
+    print("  0. 取消")
+    try:
+        raw = input("  请输入序号：").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if raw in ("0", ""):
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        print("  [失败] 输入不对，已取消。")
+        return None
+    if 1 <= n <= len(options):
+        return options[n - 1]
+    print("  [失败] 没有这个选项，已取消。")
+    return None
+
+
+def do_transfer(token, source, new_owner):
+    """整个仓库直接转移到另一个账号/组织名下（GitHub transfer API）。
+
+    和“合并搬家”不一样：这不是把文件复制到另一个仓库里，而是仓库本身
+    换东家，改完后原地址会自动跳转到新地址，Issues/PR/Release/Star 都在。
+    成功一般返回 202（GitHub 后台慢慢转），少数返回 200。
+    """
+    status, data, _ = api_request(token, "GET", f"/repos/{source}")
+    if status != 200:
+        msg = data.get("message", "") if isinstance(data, dict) else data
+        print(f"[失败] 来源仓库 {source} 读不到：HTTP {status} — {msg}")
+        return False
+    old_owner = source.split("/")[0]
+    if old_owner.lower() == new_owner.lower():
+        print(f"[失败] {source} 已经在 {new_owner} 名下了，不用转移。")
+        return False
+    print(f"[提示]  正在转移 {source} → {new_owner} …")
+    status, data, _ = api_request(token, "POST", f"/repos/{source}/transfer",
+                                  {"new_owner": new_owner})
+    if status in (200, 202):
+        new_name = (data or {}).get("full_name", f"{new_owner}/{source.split('/')[-1]}")
+        print(f"[成功] 已转移：{source} → {new_name}")
+        print("        原地址会自动跳转到新地址；组织里看不到就是权限不够，找组织 Owner 再转。")
+        return True
+    msg = data.get("message", "") if isinstance(data, dict) else data
+    print(f"[失败] 转移失败：HTTP {status} — {msg}")
+    if status == 403:
+        print("     403 一般是权限不够：转到组织要你在那个组织里有建库权限，")
+        print("     或源仓库你不是管理员；换个有权限的号再试。")
+    if status == 404:
+        print("     404 一般是来源仓库不存在，或 token 看不到它。")
+    return False
+
+
+def _move_menu(token):
+    """菜单 3：先看清单，再输序号选来源和目标。
+
+    两种搬法，先选一种：
+      1 合并搬家：源码进 目标/<来源仓库名>/，工作流自动合并到目标 .github/workflows/
+      2 转移仓库：整个仓库直接移到组织/账号名下（这才是“直接移到组织下”）
+    """
+    print()
+    print("  移动仓库有两种搬法，先选一种：")
+    print("  1. 合并搬家：A 仓库的文件搬到 B 仓库的子目录下")
+    print("     源码进 B/<A仓库名>/，工作流自动合并到 B/.github/workflows/，不进子目录")
+    print("  2. 转移仓库：整个仓库直接移到组织/账号名下")
+    print("     Issues/PR/Star 都跟着走，原地址自动跳转到新地址")
+    print("  0. 返回菜单")
+    try:
+        kind = input("  请输入序号（0-2）：").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if kind == "0" or kind == "":
+        return
+    if kind not in ("1", "2"):
+        print("  [失败] 没有这个选项，回到菜单。")
+        return
+
+    print()
+    print("  先列出你个人 + 所有组织的仓库清单，看完再选。")
+    repos = fetch_all_repos(token)
+    if not repos:
+        print("  [失败] 没拉到仓库，回到菜单。")
+        return
+    _show_repos_paged(repos)
+
+    src = _pick_repo_by_number(repos, "  来源仓库：输它前面的序号（输 0 取消）：")
+    if not src:
+        print("  已取消，什么都没动。")
+        return
+
+    if kind == "2":
+        # 转移仓库：再选新东家，确认两次才调 API
+        new_owner = _choose_new_owner(token)
+        if not new_owner:
+            print("  已取消，什么都没动。")
+            return
+        print()
+        print(f"  [警告] 即将转移：{src} → {new_owner}/{src.split('/')[-1]}")
+        print("         转移后原地址自动跳转，仓库本身换东家，不可逆操作前请看准。")
+        ok = input("  确认转移？输 y 继续，其他任意键取消：").strip().lower()
+        if ok != "y":
+            print("  已取消，什么都没动。")
+            return
+        do_transfer(token, src, new_owner)
+        return
+
+    # 合并搬家：再输序号选目标，工作流自动进目标 .github/workflows/
+    dst = _pick_repo_by_number(
+        repos, "  目标仓库：输它前面的序号（源码搬到它下面，工作流自动进它的 .github/workflows/，输 0 取消）：")
+    if not dst:
+        print("  已取消，什么都没动。")
+        return
+    if src.lower() == dst.lower():
+        print("  [失败] 来源和目标是同一个仓库，回到菜单。")
+        return
+    sub = input("  子目录名（直接回车就用来源仓库名）：").strip()
+    ans = input("  搬完要不要删除源库？输 y 才删，其他直接回车保留：").strip().lower()
+    # 直接调 do_move：它会先打移动计划（搬多少文件、哪些工作流），
+    # 问你输 y 才真搬，不用再单独演练一遍（演练也要克隆两次，慢）。
+    print("  下面会先显示移动计划，看完输 y 才真搬。")
+    move_args = argparse.Namespace(
+        move=src, to=dst, subdir=sub or None,
+        delete_source=(ans == "y"), auto_rename=False,
+        dry_run=False, yes=False)
+    do_move(token, move_args)
+
+
+def _token_menu(token):
+    """菜单 5：Token 管理。返回当前在用的 token（换了就返回新的）。"""
+    while True:
+        saved = _load_saved_token()
+        print()
+        print("=" * 56)
+        print("  Token 管理")
+        print("=" * 56)
+        if saved:
+            print(f"  已保存的 Token：{_mask_token(saved)}（存在 {_token_store_path()}）")
+        else:
+            print("  本机没有保存 Token（每次启动都要现输）。")
+        print(f"  本次在用的 Token：{_mask_token(token)}")
+        print()
+        print("  1. 更换已保存的 Token（重新输一个，校验通过后保存）")
+        print("  2. 清除已保存的 Token（下次启动又要现输）")
+        print("  0. 返回菜单")
+        print("-" * 56)
+        try:
+            choice = input("  请输入序号（0-2）：").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return token
+        if choice == "0" or choice == "":
+            return token
+        if choice == "1":
+            new_tok = prompt_token()
+            if new_tok:
+                token = new_tok
+                os.environ["GITHUB_TOKEN"] = token
+                print("  本次已换成新 Token。")
+            else:
+                print("  没换成，还是用原来的 Token。")
+        elif choice == "2":
+            if _clear_saved_token():
+                print("  [成功] 已清除保存的 Token，下次启动又要现输。")
+                print("        本次运行还用内存里的 Token，退出就没了。")
+            else:
+                print("  本来就没有保存的 Token，不用清除。")
+        else:
+            print("  [失败] 没有这个选项，请输入 0-2。")
+
+
 def show_menu(token):
     """中文主菜单：无参数启动时进这里，循环到你选 0 退出为止。"""
     os.environ["GITHUB_TOKEN"] = token  # 只放进内存里的环境变量，不写文件
@@ -477,12 +820,13 @@ def show_menu(token):
         print("=" * 56)
         print("  1. 查看仓库清单（只看不删，最安全）")
         print("  2. 勾选删除仓库（列清单 → 输序号 → 输 y 两次确认）")
-        print("  3. 移动合并仓库（A 仓库搬到 B 仓库的子目录下）")
+        print("  3. 移动仓库（先看清单，输序号选来源/目标；可合并搬家，也可直接移到组织下）")
         print("  4. 归档仓库（代替删除，可恢复）")
+        print("  5. Token 管理（更换 / 清除本机保存的 Token）")
         print("  0. 退出")
         print("-" * 56)
         try:
-            choice = input("  请输入序号（0-4）：").strip()
+            choice = input("  请输入序号（0-5）：").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n  已退出。")
             return
@@ -503,27 +847,7 @@ def show_menu(token):
             _run_self(scope)
             _pause()
         elif choice == "3":
-            src = input("  来源仓库（完整名，如 dj56959566/old-repo）：").strip()
-            dst = input("  目标仓库（完整名，如 dj56959566/main-repo）：").strip()
-            if not src or not dst or "/" not in src or "/" not in dst:
-                print("  [失败] 两个都要写完整名（账号/仓库名），回到菜单。")
-                _pause()
-                continue
-            sub = input("  子目录名（直接回车就用来源仓库名）：").strip()
-            extra = ["--move", src, "--to", dst]
-            if sub:
-                extra += ["--subdir", sub]
-            ans = input("  搬完要不要删除源库？输 y 才删，其他直接回车保留：").strip().lower()
-            if ans == "y":
-                extra += ["--delete-source"]
-            print("  先演练一遍，确认没问题再真搬。")
-            _run_self(extra + ["--dry-run"])
-            ok = input("  演练看完了，确认要真搬？输 y 真搬，其他任意键取消：").strip().lower()
-            if ok != "y":
-                print("  已取消，没搬。")
-                _pause()
-                continue
-            _run_self(extra)
+            _move_menu(token)
             _pause()
         elif choice == "4":
             scope = _choose_scope(token)
@@ -532,8 +856,11 @@ def show_menu(token):
             print("  归档是只读、可恢复的，比删除安全。")
             _run_self(scope + ["--archive"])
             _pause()
+        elif choice == "5":
+            token = _token_menu(token)
+            _pause()
         else:
-            print("  [失败] 没有这个选项，请输入 0-4。")
+            print("  [失败] 没有这个选项，请输入 0-5。")
 
 
 PAGE_SIZE = 10
@@ -811,7 +1138,13 @@ def apply_move(src_dir, dst_dir, subdir, source_repo, auto_rename):
 
 def _run(cmd, cwd=None, redact=""):
     """跑一条 git 命令；失败时打印 stderr（并把 token 抹掉，绝不外泄）"""
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=300)
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=300)
+    except FileNotFoundError:
+        print("[失败] 找不到 git 命令：这台电脑没装 Git，或 Git 不在 PATH 里。")
+        print("   装一下 Git for Windows（https://git-scm.com/download/win），装完关掉重开终端，")
+        print("   先跑 git --version 确认能用，再重新运行本工具。")
+        sys.exit(1)
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip()
         if redact:
@@ -824,8 +1157,14 @@ def _run(cmd, cwd=None, redact=""):
 def _clone(token, full_name, dest):
     url = f"https://oauth2:{token}@github.com/{full_name}.git"
     print(f"[提示]  正在克隆 {full_name} …")
-    r = subprocess.run(["git", "clone", "--depth", "1", url, dest],
-                       capture_output=True, text=True, timeout=300)
+    try:
+        r = subprocess.run(["git", "clone", "--depth", "1", url, dest],
+                           capture_output=True, text=True, timeout=300)
+    except FileNotFoundError:
+        print("[失败] 找不到 git 命令：这台电脑没装 Git，或 Git 不在 PATH 里。")
+        print("   装一下 Git for Windows（https://git-scm.com/download/win），装完关掉重开终端，")
+        print("   先跑 git --version 确认能用，再重新运行本工具。")
+        sys.exit(1)
     if r.returncode != 0:
         err = (r.stderr or "").replace(token, "***").strip()
         print(f"[失败] 克隆失败 {full_name}：{err}")
@@ -959,6 +1298,10 @@ def main():
     p.add_argument("--archive", action="store_true",
                    help="归档代替删除（可恢复）：对选中仓库做 PATCH archived=true")
     p.add_argument("--token", help="GitHub token（不推荐命令行传，优先用环境变量）")
+    p.add_argument("--save-token", action="store_true",
+                   help="把本次用的 token 保存在本机，下次不用再输（菜单 5 可清除）")
+    p.add_argument("--clear-token", action="store_true",
+                   help="清除本机保存的 token，然后退出")
     p.add_argument("--yes", action="store_true", help="跳过第一次 y 确认（仍需第二次 y 确认）")
     p.add_argument("--force", action="store_true",
                    help="配合 --file --yes 做完全非交互（危险，仍会写日志）")
@@ -970,7 +1313,19 @@ def main():
                    help="搬完后删除源库（仍需输入 y 确认）")
     p.add_argument("--auto-rename", action="store_true",
                    help="同名工作流/子目录自动改名，不逐个问你")
+    # 转移仓库（整个仓库直接移到组织/账号名下）
+    p.add_argument("--transfer", action="store_true",
+                   help="配合 --move + --to-owner：整个仓库直接转移到指定账号/组织名下")
+    p.add_argument("--to-owner", help="转移的目标账号/组织名，如 --to-owner djbadboy-56959566-qq-com")
     args = p.parse_args()
+
+    # --clear-token：不用 token 就能清，清完直接退出
+    if args.clear_token:
+        if _clear_saved_token():
+            print("[成功] 已清除本机保存的 Token，下次启动又要现输。")
+        else:
+            print("[提示] 本来就没有保存的 Token，不用清除。")
+        return
 
     # 无参数启动（双击 exe / 直接 python3 clean_repos.py）进中文菜单，
     # 带参数（如 --list-only / --move / --file）走命令行模式，不进菜单。
@@ -991,8 +1346,37 @@ def main():
                   "  建 token：https://github.com/settings/tokens")
             sys.exit(1)
 
+    # --save-token：把本次用的 token 存本机（--token / 环境变量给的也能存）
+    if args.save_token:
+        if _save_token(token):
+            print(f"[成功] Token 已保存到 {_token_store_path()}，下次不用再输。")
+
+    # 本机保存的 token 先校验一次：过期了就清掉、重新问你要，别拿着失效的往下走
+    saved = _load_saved_token()
+    if saved and saved == token and not args.token and not os.environ.get("GITHUB_TOKEN"):
+        status, me, _ = api_request(token, "GET", "/user")
+        if status != 200:
+            print(f"[失败] 本机保存的 Token 已失效（HTTP {status}），已清除，请重新输入。")
+            _clear_saved_token()
+            if sys.stdin.isatty():
+                token = prompt_token()
+                if not token:
+                    _pause("  按回车退出…")
+                    sys.exit(1)
+            else:
+                sys.exit(1)
+
     if menu_mode:
         show_menu(token)
+        return
+
+    # ---- 转移仓库模式：--move + --transfer + --to-owner，不走删库流程 ----
+    if args.transfer:
+        if not args.move or not args.to_owner:
+            print("[失败] --transfer 必须配合 --move 和 --to-owner，"
+                  "如 --move dj56959566/old-repo --transfer --to-owner my-org")
+            sys.exit(1)
+        do_transfer(token, args.move.strip(), args.to_owner.strip())
         return
 
     # ---- 移动合并模式：--move 优先，不走删库流程 ----
