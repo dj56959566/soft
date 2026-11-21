@@ -14,8 +14,11 @@
 #  5. 只保留最新 2 个发行版：每次发完新版，自动删掉第 3 个及更旧的发行版
 #     （连 tag 一起删），超过 2 个就不要了。
 # 用法：把这个文件覆盖到仓库的 .github/workflows/github-repo-cleaner.yml，
+# 同时把 clean_repos.py 传到 gsoft/clean_repos.py、icon.ico 传到 gsoft/icon.ico，
 # 然后去 Actions 页 → Build github-repo-cleaner.exe → Run workflow 手动跑一次，
 # 跑完回主页看，发行版里会出现对应版本号，点进去下 zip 解压就能用。
+# v2.1：打包加 --icon gsoft/icon.ico，exe 有图标了；图标文件在 gsoft/icon.ico，
+# 没传图标打包会直接报错停下，不会悄悄打出一个没图标的 exe。
 name: Build github-repo-cleaner.exe
 
 permissions:
@@ -45,8 +48,13 @@ jobs:
           $ver = "v" + $line.Matches.Groups[1].Value
           echo "version=$ver" >> $env:GITHUB_OUTPUT
           echo "版本号：$ver"
-      - name: 打包成单个 exe
-        run: pyinstaller --onefile --console --name github-repo-cleaner gsoft/clean_repos.py
+      - name: 检查图标文件在不在
+        shell: pwsh
+        run: |
+          if (-not (Test-Path gsoft/icon.ico)) { echo "缺图标文件：gsoft/icon.ico 没传上来，先传图标再打包"; exit 1 }
+          echo "图标在：gsoft/icon.ico"
+      - name: 打包成单个 exe（带图标）
+        run: pyinstaller --onefile --console --name github-repo-cleaner --icon gsoft/icon.ico gsoft/clean_repos.py
       - name: 打成压缩包（Release 里放 zip，下载解压就能用）
         shell: pwsh
         run: Compress-Archive -Path dist/github-repo-cleaner.exe -DestinationPath dist/github-repo-cleaner-windows.zip -Force
